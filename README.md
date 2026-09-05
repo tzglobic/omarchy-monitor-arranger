@@ -58,6 +58,18 @@ omarchy-shell shell rescanPlugins
 omarchy plugin enable tzglobic.monitor-arranger --section right
 ```
 
+## Uninstall
+
+```bash
+omarchy plugin remove tzglobic.monitor-arranger
+```
+
+The plugin leaves two things behind, both yours to keep or delete: the
+generated block in `~/.config/hypr/monitors.lua` (everything between the
+`-- >>> omarchy-monitor-arranger >>>` markers — your arrangement keeps
+working without the plugin) and the backups in
+`~/.local/state/omarchy/monitor-arranger/`.
+
 ## How it writes your config
 
 Everything the widget generates lives inside a marked block:
