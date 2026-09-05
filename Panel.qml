@@ -402,12 +402,20 @@ Panel {
 
   // ------------------------------------------------------------- bar button
 
+  // The bar sizes each slot from its widget's implicit size. Without these the
+  // slot collapses to zero width and the icon never appears on the bar, even
+  // though the panel itself loads and answers IPC perfectly well.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // Nerd Font: single display vs. multiple displays.
-    text: Model.enabledOnly(root.monitors).length > 1 ? "󰍺" : "󰍹"
+    // A layout grid rather than a monitor glyph: Omarchy's own Display widget
+    // sits a few slots away on the same bar and already owns 󰍹/󰍺, so a
+    // monitor icon here is indistinguishable from it.
+    text: "󰕰"
     onPressed: function(b) { root.toggle() }
   }
 
