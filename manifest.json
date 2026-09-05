@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "tzglobic.monitor-arranger",
+  "name": "Monitor Arranger",
+  "version": "0.1.0",
+  "author": "tzglobic",
+  "description": "Drag-to-arrange display layout that saves to monitors.lua",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Monitor Arranger",
+    "description": "Arrange, rotate and scale displays, then persist to Hyprland",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

@@ -1,0 +1,126 @@
+#!/bin/bash
+
+# Filesystem side of the monitor arranger. The widget owns all layout logic
+# (Model.js); this script only does the things QML should not: writing the
+# Hyprland config atomically, keeping backups, and clearing the mirror toggle.
+#
+#   save        read a generated block on stdin and splice it into monitors.lua
+#   mirror-off  clear Omarchy's internal-mirror toggle
+#   status      report whether the mirror toggle is currently latched
+#
+# The splice deliberately lives here rather than in the widget: the file has
+# to be read at the moment it is written. Reading it in QML and holding the
+# contents until the user hits Save loses any edit made in between.
+#
+# Usable standalone:  omarchy-monitor-arranger status
+
+set -euo pipefail
+
+MONITORS_LUA="${OMARCHY_MONITORS_LUA:-$HOME/.config/hypr/monitors.lua}"
+MIRROR_TOGGLE="$HOME/.local/state/omarchy/toggles/hypr/internal-monitor-mirror.lua"
+BACKUP_DIR="${OMARCHY_ARRANGER_BACKUPS:-$HOME/.local/state/omarchy/monitor-arranger}"
+KEEP_BACKUPS=10
+
+# Must match Model.js BLOCK_START / BLOCK_END exactly.
+BLOCK_START="-- >>> omarchy-monitor-arranger >>>"
+BLOCK_END="-- <<< omarchy-monitor-arranger <<<"
+
+fail() {
+  echo "omarchy-monitor-arranger: $*" >&2
+  exit 1
+}
+
+# Omarchy loads `default.hypr.toggles` after `hypr.monitors`, so a latched
+# mirror toggle silently overrides everything monitors.lua says about the
+# mirrored output — including its transform and scale. Any arrangement the
+# widget writes is dead on arrival until this is cleared.
+mirror_latched() {
+  [[ -f $MIRROR_TOGGLE ]]
+}
+
+cmd_status() {
+  if mirror_latched; then
+    echo "mirror-latched"
+  else
+    echo "ok"
+  fi
+}
+
+cmd_mirror_off() {
+  mirror_latched || { echo "ok"; return 0; }
+  if command -v omarchy-hyprland-monitor-internal-mirror >/dev/null 2>&1; then
+    omarchy-hyprland-monitor-internal-mirror off >/dev/null 2>&1 || rm -f "$MIRROR_TOGGLE"
+  else
+    rm -f "$MIRROR_TOGGLE"
+  fi
+  echo "ok"
+}
+
+cmd_save() {
+  local block
+  block=$(cat)
+
+  # Refuse to write something that clearly is not a monitor config. A truncated
+  # pipe here would leave the user with no displays configured at all.
+  [[ -n ${block//[[:space:]]/} ]] || fail "refusing to write an empty block"
+  grep -q "hl.monitor(" <<<"$block" || fail "refusing to write: no hl.monitor() calls in input"
+  grep -q "^$BLOCK_START\$" <<<"$block" || fail "refusing to write: block is missing its start marker"
+  grep -q "^$BLOCK_END\$" <<<"$block" || fail "refusing to write: block is missing its end marker"
+
+  mkdir -p "$(dirname -- "$MONITORS_LUA")" "$BACKUP_DIR"
+  [[ -f $MONITORS_LUA ]] || : >"$MONITORS_LUA"
+
+  # Millisecond precision: two saves in the same second would otherwise write
+  # the same backup name and the older one would be lost.
+  cp -p -- "$MONITORS_LUA" "$BACKUP_DIR/monitors.lua.$(date +%Y%m%d-%H%M%S-%3N)"
+  local stale
+  mapfile -t stale < <(ls -1t "$BACKUP_DIR"/monitors.lua.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
+  [[ ${#stale[@]} -eq 0 ]] || rm -f -- "${stale[@]}"
+
+  local blockfile tmp
+  blockfile=$(mktemp)
+  printf '%s\n' "$block" >"$blockfile"
+
+  # Replace an existing managed block in place, or append one. Appending puts
+  # it last on purpose: Hyprland applies monitor rules in file order, so a
+  # wildcard rule earlier in the file cannot override what we write.
+  tmp=$(mktemp -- "$MONITORS_LUA.arranger.XXXXXX")
+  awk -v start="$BLOCK_START" -v end="$BLOCK_END" -v blockfile="$blockfile" '
+    function emit(  line) { while ((getline line < blockfile) > 0) print line; close(blockfile) }
+    $0 == start { inblock = 1; emit(); replaced = 1; next }
+    $0 == end   { inblock = 0; next }
+    inblock     { next }
+                { print }
+    END { if (!replaced) { if (NR > 0) print ""; emit() } }
+  ' "$MONITORS_LUA" >"$tmp"
+  rm -f "$blockfile"
+
+  # Never leave the user with a config that lost its displays.
+  if ! grep -q "hl.monitor(" "$tmp"; then
+    rm -f "$tmp"
+    fail "refusing to write: result contains no hl.monitor() calls"
+  fi
+
+  mv -f -- "$tmp" "$MONITORS_LUA"
+
+  hyprctl reload >/dev/null 2>&1 || true
+
+  local errors
+  errors=$(hyprctl configerrors 2>/dev/null | tr -d '[:space:]')
+  if [[ -n $errors && $errors != "no"* ]]; then
+    echo "saved-with-errors"
+    hyprctl configerrors >&2
+    exit 0
+  fi
+  echo "ok"
+}
+
+case "${1:-}" in
+save) cmd_save ;;
+mirror-off) cmd_mirror_off ;;
+status) cmd_status ;;
+-h | --help)
+  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+  ;;
+*) fail "usage: omarchy-monitor-arranger {save|mirror-off|status}" ;;
+esac
