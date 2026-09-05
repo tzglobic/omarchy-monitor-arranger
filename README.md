@@ -8,6 +8,8 @@ Omarchy ships display *controls* (brightness, scale, enable/disable) but no
 display *arranger*, and the general-purpose Wayland tools — `nwg-displays`,
 `wdisplays` — cannot save into Omarchy's Lua config. This fills that gap.
 
+<img src="preview.png" alt="Monitor Arranger panel" width="400">
+
 ## What it does
 
 - **Drag to arrange.** Displays are drawn to scale and snap flush to each
