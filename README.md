@@ -11,11 +11,18 @@ display *arranger*, and the general-purpose Wayland tools — `nwg-displays`,
 ## What it does
 
 - **Drag to arrange.** Displays are drawn to scale and snap flush to each
-  other's edges, so you never end up with a one-pixel dead strip or an
-  overlap that Hyprland silently reflows around.
+  other's edges, with a guide line showing what an edge latched onto, so you
+  never end up with a one-pixel dead strip or an overlap that Hyprland
+  silently reflows around. `Shift+HJKL` nudges the selected display for fine
+  adjustment; disabled displays park as ghosts at the bottom of the canvas so
+  they stay clickable.
 - **Rotate and scale.** Portrait, 180°, 270°, and the usual scale presets.
-- **Preview, then save.** *Apply* pushes the layout to the running session;
-  *Save* writes it to `monitors.lua` so it survives a reboot.
+  Scales that don't divide the resolution evenly (which Hyprland silently
+  adjusts on reload) are flagged, with the nearest exact scale suggested.
+- **Preview safely, then save.** *Apply* pushes the layout to the running
+  session and starts a 15-second countdown — if you don't confirm (because a
+  bad mode blacked out your screens, say), the previous arrangement comes
+  back on its own. *Save* writes to `monitors.lua` so it survives a reboot.
 - **Themed.** Every colour, font, and spacing value comes from the shell's
   `Style` and `Color` singletons, so it follows `omarchy theme set` without
   carrying a palette of its own.
@@ -93,9 +100,15 @@ omarchy-shell monitor-arranger open       # or close / toggle
 omarchy-shell monitor-arranger state      # JSON: bounds, dirty, overlaps
 omarchy-shell monitor-arranger arrange    # pack displays left to right
 omarchy-shell monitor-arranger preview    # apply to the running session
+omarchy-shell monitor-arranger keep       # confirm a preview (stop the countdown)
 omarchy-shell monitor-arranger save       # write monitors.lua and reload
-omarchy-shell monitor-arranger revert     # back to the live arrangement
+omarchy-shell monitor-arranger revert     # back to the pre-preview arrangement
 ```
+
+`preview` arms the same 15-second auto-revert as the panel's Apply button, so
+a script (or keybind) that wants the change to stick must follow up with
+`keep` or `save` — the safety net is the point: a preview that produced a
+black screen undoes itself.
 
 The file-writing half is a standalone script and is useful on its own:
 

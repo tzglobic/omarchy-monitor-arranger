@@ -99,6 +99,22 @@ function shallowCopy(obj) {
   return out
 }
 
+// Deep copy of an already-parsed monitor list. This — not parseMonitors — is
+// how to duplicate parsed state: parseMonitors expects raw hyprctl field
+// names (width, disabled, availableModes) and running it over its own output
+// zeroes every geometry and re-enables disabled displays.
+function copyMonitors(monitors) {
+  var out = []
+  for (var i = 0; i < (monitors || []).length; i++) {
+    var m = shallowCopy(monitors[i])
+    var modes = []
+    for (var j = 0; j < (m.modes || []).length; j++) modes.push(shallowCopy(m.modes[j]))
+    m.modes = modes
+    out.push(m)
+  }
+  return out
+}
+
 // ------------------------------------------------------------------ parsing
 
 var INTERNAL_CONNECTOR = /^(eDP|LVDS|DSI)-/i
@@ -231,41 +247,45 @@ function shortLabel(monitor) {
 
 function snapPosition(dragged, others, threshold) {
   var limit = Number(threshold) > 0 ? Number(threshold) : 40
-  var best = { x: dragged.x, y: dragged.y, guideX: null, guideY: null }
+  // edgeX/edgeY are the logical coordinates of the shared or aligned edge —
+  // where the canvas should draw a guide line while this snap is active.
+  var best = { x: dragged.x, y: dragged.y, guideX: null, guideY: null, edgeX: null, edgeY: null }
   var bestDx = limit + 1
   var bestDy = limit + 1
 
-  function considerX(value, guide) {
+  function considerX(value, guide, edge) {
     var delta = Math.abs(value - dragged.x)
-    if (delta < bestDx) { bestDx = delta; best.x = value; best.guideX = guide }
+    if (delta < bestDx) { bestDx = delta; best.x = value; best.guideX = guide; best.edgeX = edge }
   }
-  function considerY(value, guide) {
+  function considerY(value, guide, edge) {
     var delta = Math.abs(value - dragged.y)
-    if (delta < bestDy) { bestDy = delta; best.y = value; best.guideY = guide }
+    if (delta < bestDy) { bestDy = delta; best.y = value; best.guideY = guide; best.edgeY = edge }
   }
 
   // The origin is always a snap target so a lone display can be re-anchored.
-  considerX(0, "origin")
-  considerY(0, "origin")
+  considerX(0, "origin", 0)
+  considerY(0, "origin", 0)
 
   for (var i = 0; i < (others || []).length; i++) {
     var o = others[i]
     if (!o) continue
-    considerX(o.x + o.w, "right-of")     // attach to the right edge
-    considerX(o.x - dragged.w, "left-of")  // attach to the left edge
-    considerX(o.x, "align-left")
-    considerX(o.x + o.w - dragged.w, "align-right")
+    considerX(o.x + o.w, "right-of", o.x + o.w)                // attach to the right edge
+    considerX(o.x - dragged.w, "left-of", o.x)                 // attach to the left edge
+    considerX(o.x, "align-left", o.x)
+    considerX(o.x + o.w - dragged.w, "align-right", o.x + o.w)
 
-    considerY(o.y + o.h, "below")
-    considerY(o.y - dragged.h, "above")
-    considerY(o.y, "align-top")
-    considerY(o.y + o.h - dragged.h, "align-bottom")
+    considerY(o.y + o.h, "below", o.y + o.h)
+    considerY(o.y - dragged.h, "above", o.y)
+    considerY(o.y, "align-top", o.y)
+    considerY(o.y + o.h - dragged.h, "align-bottom", o.y + o.h)
   }
 
-  if (bestDx > limit) { best.x = dragged.x; best.guideX = null }
-  if (bestDy > limit) { best.y = dragged.y; best.guideY = null }
+  if (bestDx > limit) { best.x = dragged.x; best.guideX = null; best.edgeX = null }
+  if (bestDy > limit) { best.y = dragged.y; best.guideY = null; best.edgeY = null }
   best.x = Math.round(best.x)
   best.y = Math.round(best.y)
+  if (best.edgeX !== null) best.edgeX = Math.round(best.edgeX)
+  if (best.edgeY !== null) best.edgeY = Math.round(best.edgeY)
   return best
 }
 
@@ -316,6 +336,42 @@ function formatScale(scale) {
   if (!isFinite(n) || n <= 0) n = 1
   // Trim trailing zeros: 1.25 stays 1.25, 1.00 becomes 1.
   return String(Math.round(n * 1000) / 1000)
+}
+
+// Hyprland requires the logical size (pixels / scale) to be an integer and
+// silently nudges any scale that misses, so what gets saved is not what
+// reloads. Flag those before the user hits Save.
+function scaleIsExact(monitor) {
+  var scale = Number(monitor.scale)
+  if (!isFinite(scale) || scale <= 0) return true
+  var px = rotatedPixels(monitor)
+  if (px.w <= 0 || px.h <= 0) return true
+  var w = px.w / scale
+  var h = px.h / scale
+  return Math.abs(w - Math.round(w)) < 1e-6 && Math.abs(h - Math.round(h)) < 1e-6
+}
+
+// The closest scale to the monitor's current one that divides both dimensions
+// to integers AND has a clean 3-decimal form (a suggestion that drifts again
+// the moment formatScale writes it to the config is worse than none). The
+// search walks the 0.025 lattice from 0.5 to 4 — the scales a person would
+// actually type. Returns null only when the monitor has no geometry.
+function nearestExactScale(monitor) {
+  var scale = Number(monitor.scale)
+  if (!isFinite(scale) || scale <= 0) scale = 1
+  var px = rotatedPixels(monitor)
+  if (px.w <= 0 || px.h <= 0) return null
+
+  var best = null
+  var bestDiff = Infinity
+  for (var n = 20; n <= 160; n++) {
+    var s = Math.round(n * 25) / 1000   // exact 3-decimal representation
+    if (Math.abs(s - scale) < 1e-9) continue
+    if (!scaleIsExact({ pixelWidth: px.w, pixelHeight: px.h, scale: s, transform: 0 })) continue
+    var diff = Math.abs(s - scale)
+    if (diff < bestDiff) { bestDiff = diff; best = s }
+  }
+  return best
 }
 
 function monitorLua(monitor, monitors) {
@@ -382,6 +438,7 @@ if (typeof module !== "undefined" && module.exports) {
     transformSwapsAxes: transformSwapsAxes, transformLabel: transformLabel, isPortrait: isPortrait,
     rotatedPixels: rotatedPixels, logicalSize: logicalSize, rectOf: rectOf, bounds: bounds,
     enabledOnly: enabledOnly, normalizeOrigin: normalizeOrigin, isInternal: isInternal,
+    copyMonitors: copyMonitors, scaleIsExact: scaleIsExact, nearestExactScale: nearestExactScale,
     parseMonitors: parseMonitors, parseModes: parseModes, modeLabel: modeLabel,
     currentModeLabel: currentModeLabel, outputKey: outputKey, descriptionKey: descriptionKey,
     shortLabel: shortLabel, snapPosition: snapPosition, rectsOverlap: rectsOverlap,

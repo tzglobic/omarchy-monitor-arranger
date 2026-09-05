@@ -64,15 +64,49 @@ check("near-identical refresh rates collapse", modes.length, 2)
 check("distinct rates survive", [M.modeLabel(modes[0]), M.modeLabel(modes[1])],
   ["1920x1080@60", "1920x1080@50"])
 
+// --- copying parsed state
+// copyMonitors is the only safe way to duplicate a parsed list. Running
+// parseMonitors over its own output zeroes geometry and re-enables disabled
+// displays (this was the revert() bug), so the copy must be a deep clone.
+var copied = M.copyMonitors(mons)
+check("copy preserves geometry", M.logicalSize(copied[0]), M.logicalSize(mons[0]))
+check("copy preserves modes", copied[1].modes, mons[1].modes)
+ok("copy is deep: monitors", copied[0] !== mons[0])
+ok("copy is deep: modes", copied[1].modes[0] !== mons[1].modes[0])
+copied[0].x = 999
+check("copy does not alias the source", mons[0].x, 0)
+
+var disabledCopy = M.copyMonitors(M.parseMonitors([
+  { name: "A", width: 1920, height: 1080, x: 0, y: 0, scale: 1, disabled: true, availableModes: [] }
+]))
+check("copy preserves disabled state", disabledCopy[0].enabled, false)
+
 // --- snapping
 var dragged = { x: 4600, y: 12, w: 1152, h: 2048 }
 var others = [{ x: 1536, y: 0, w: 3072, h: 1728 }]
 var snapped = M.snapPosition(dragged, others, 40)
 check("snaps flush to the right edge", snapped.x, 4608)
 check("snaps to top alignment", snapped.y, 0)
+check("reports the shared vertical edge", snapped.edgeX, 4608)
+check("reports the aligned horizontal edge", snapped.edgeY, 0)
+
+var leftSnap = M.snapPosition({ x: 1536 - 1152 + 8, y: 0, w: 1152, h: 2048 }, others, 40)
+check("left-of snap puts the guide on the neighbour's left edge", leftSnap.edgeX, 1536)
 
 var far = M.snapPosition({ x: 9000, y: 9000, w: 100, h: 100 }, others, 40)
 check("leaves distant drags alone", { x: far.x, y: far.y }, { x: 9000, y: 9000 })
+check("no snap means no guides", { ex: far.edgeX, ey: far.edgeY }, { ex: null, ey: null })
+
+// --- scale exactness
+ok("1.25 divides 3840x2160", M.scaleIsExact({ pixelWidth: 3840, pixelHeight: 2160, scale: 1.25, transform: 0 }))
+ok("1.6 divides 3840x2400", M.scaleIsExact({ pixelWidth: 3840, pixelHeight: 2400, scale: 1.6, transform: 0 }))
+ok("1.5 does not divide 2560x1440", !M.scaleIsExact({ pixelWidth: 2560, pixelHeight: 1440, scale: 1.5, transform: 0 }))
+ok("exactness follows the rotated axes", M.scaleIsExact({ pixelWidth: 2560, pixelHeight: 1440, scale: 1.25, transform: 1 }))
+check("suggests the nearest exact scale", M.nearestExactScale({ pixelWidth: 2560, pixelHeight: 1440, scale: 1.5, transform: 0 }), 1.6)
+ok("suggestion is itself exact", M.scaleIsExact({ pixelWidth: 2560, pixelHeight: 1440, scale: M.nearestExactScale({ pixelWidth: 2560, pixelHeight: 1440, scale: 1.5, transform: 0 }), transform: 0 }))
+// Awkward panels (1366x768) have almost no exact fractional scales; the
+// nearest sane suggestion is integer scale.
+check("awkward panels fall back to an integer scale", M.nearestExactScale({ pixelWidth: 1366, pixelHeight: 768, scale: 1.25, transform: 0 }), 1)
 
 // --- overlap detection
 var overlapping = M.parseMonitors([

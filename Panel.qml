@@ -34,6 +34,21 @@ Panel {
   property int dragIndex: -1
   property real dragX: 0
   property real dragY: 0
+  // Logical coordinate of the currently snapped edge, or null. Drawn as a
+  // guide line on the canvas so the user can see what the tile latched onto.
+  property var dragEdgeX: null
+  property var dragEdgeY: null
+
+  // IPC `arrange` wants fresh data, but the refresh is async: latch the
+  // request and run it when the read lands, instead of arranging stale state.
+  property bool pendingArrange: false
+
+  // Apply safety net. The live arrangement as it was before Apply, and the
+  // seconds left before it is restored unless the user confirms. Applying a
+  // bad mode can black out every display, so an unconfirmed Apply reverts on
+  // its own — the countdown must not depend on the panel being open.
+  property var applySnapshot: null
+  property int revertCountdown: 0
 
   // Keyboard cursor, mirroring the shell's other panels: a section plus an
   // index inside it, shared with pointer hover so both drive one highlight.
@@ -59,6 +74,18 @@ Panel {
   readonly property var overlapPairs: Model.overlaps(monitors)
   readonly property bool hasOverlap: overlapPairs.length > 0
 
+  // Displays mirroring another output (beyond Omarchy's own internal-mirror
+  // toggle, which has its own notice). monitorLua writes plain positioned
+  // rules, so saving converts these to extended — warn before that happens.
+  readonly property var mirroredDisplays: {
+    var out = []
+    for (var i = 0; i < monitors.length; i++) {
+      var m = monitors[i]
+      if (m.enabled && m.mirrorOf) out.push(m.name + " mirrors " + m.mirrorOf)
+    }
+    return out
+  }
+
   readonly property var scalePresets: [1, 1.25, 1.5, 1.6, 2]
   // Short labels so four buttons fit one row at any font scale; the readable
   // name goes in the tooltip.
@@ -79,9 +106,15 @@ Panel {
   function adoptLive(raw) {
     var parsed = Model.parseMonitors(raw)
     liveMonitors = parsed
-    if (!dirty) {
-      monitors = Model.parseMonitors(raw)   // independent copy to edit
+    // Never adopt mid-drag: reassigning `monitors` rebuilds the Repeater's
+    // delegates and drops the press state out from under the gesture.
+    if (!dirty && dragIndex < 0) {
+      monitors = Model.copyMonitors(parsed)   // independent copy to edit
       clampSelection()
+    }
+    if (pendingArrange) {
+      pendingArrange = false
+      autoArrange()
     }
   }
 
@@ -129,6 +162,15 @@ Panel {
     updateMonitor(index, { x: Math.round(x), y: Math.round(y) })
   }
 
+  // Keyboard fine-adjustment: Shift+HJKL moves the selected display by a
+  // step small enough to matter after a drag has done the coarse work.
+  readonly property int nudgeStep: 10
+  function nudgeSelected(dx, dy) {
+    var m = selected
+    if (!m || !m.enabled) return
+    moveTo(selectedIndex, m.x + dx * nudgeStep, m.y + dy * nudgeStep)
+  }
+
   function setTransform(index, transform) {
     updateMonitor(index, { transform: transform })
   }
@@ -165,13 +207,37 @@ Panel {
   }
 
   function revert() {
-    monitors = Model.parseMonitors(liveMonitors)
+    // Mid-countdown the live session already shows the applied layout, so
+    // "revert" means the pre-Apply snapshot: put it back on screen and in
+    // the working copy both.
+    if (applySnapshot) {
+      monitors = Model.copyMonitors(applySnapshot)
+      dirty = false
+      clampSelection()
+      restoreSnapshot("Reverted to the previous arrangement.", "info")
+      return
+    }
+    // copyMonitors, not parseMonitors: liveMonitors is already parsed, and
+    // re-parsing it zeroes every display (see Model.copyMonitors).
+    monitors = Model.copyMonitors(liveMonitors)
     dirty = false
     clampSelection()
     setStatus("Reverted to the live arrangement.", "info")
   }
 
   // ------------------------------------------------------------- apply / save
+
+  // One shell invocation for a whole monitor list. `set -e` so the first
+  // rejected line aborts the batch and surfaces as a nonzero exit code
+  // (hyprctl eval exits 7 on a bad mode or Lua error).
+  function evalScriptFor(list) {
+    var commands = Model.evalCommands(list)
+    var script = ["set -e"]
+    for (var i = 0; i < commands.length; i++) {
+      script.push("hyprctl eval " + shellQuote(commands[i][2]))
+    }
+    return ["bash", "-c", script.join("\n")]
+  }
 
   // Hyprland lays monitors out in file order, so a monitor still sitting where
   // another one is being moved to would collide mid-apply. Normalizing to the
@@ -182,14 +248,29 @@ Panel {
       return
     }
     monitors = Model.normalizeOrigin(monitors)
-    var commands = Model.evalCommands(monitors)
-    var script = []
-    for (var i = 0; i < commands.length; i++) {
-      script.push("hyprctl eval " + shellQuote(commands[i][2]))
-    }
-    applyProc.command = ["bash", "-c", script.join("\n")]
+    // A second Apply during the countdown keeps the original snapshot: the
+    // state worth going back to is the one from before the first Apply.
+    if (!applySnapshot) applySnapshot = Model.copyMonitors(liveMonitors)
+    revertCountdown = 0
+    applyProc.command = evalScriptFor(monitors)
     applyProc.running = true
-    setStatus("Applied to the live session (not saved yet).", "info")
+  }
+
+  function keepApplied() {
+    revertCountdown = 0
+    applySnapshot = null
+    setStatus("Arrangement kept — save to make it permanent.", "info")
+  }
+
+  // Push the pre-Apply snapshot back to the compositor. Used by the countdown
+  // timeout, by a failed Apply, and by Revert while a countdown is running.
+  function restoreSnapshot(message, kind) {
+    revertCountdown = 0
+    if (!applySnapshot) return
+    restoreProc.command = evalScriptFor(applySnapshot)
+    restoreProc.running = true
+    applySnapshot = null
+    setStatus(message, kind)
   }
 
   function shellQuote(value) {
@@ -201,6 +282,9 @@ Panel {
       setStatus("Displays overlap — move them apart first.", "error")
       return
     }
+    // Saving is the strongest form of "keep": cancel any pending auto-revert.
+    revertCountdown = 0
+    applySnapshot = null
     monitors = Model.normalizeOrigin(monitors)
 
     var stamp = Qt.formatDateTime(new Date(), "yyyy-MM-dd HH:mm")
@@ -209,9 +293,12 @@ Panel {
     // Only the generated block crosses this boundary. The helper reads
     // monitors.lua and splices at write time, so an edit made to the file
     // while this panel has been open is not clobbered.
-    // $0 is a label, $1 the helper path, $2 the block.
+    // $0 is a label, $1 the helper path, $2 the block. The -x probe catches
+    // the common broken install (copied without the executable bit) with a
+    // named error instead of a silent failure.
     saveProc.command = ["bash", "-c",
-      'printf "%s\\n" "$2" | "$1" save', "arranger", root.helper, block]
+      '[ -x "$1" ] || { echo missing-helper; exit 0; }\nprintf "%s\\n" "$2" | "$1" save',
+      "arranger", root.helper, block]
     saveProc.running = true
   }
 
@@ -298,10 +385,13 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
 
+    // The refresh is async: latch the arrange and let adoptLive run it once
+    // fresh data lands, instead of arranging a stale working copy (which
+    // would also set `dirty` and block the fresh read from being adopted).
     function arrange(): string {
+      root.pendingArrange = true
       root.refresh()
-      root.autoArrange()
-      return "arranged"
+      return "arranging"
     }
 
     // Named `preview`, not `apply`: an IpcHandler function called `apply`
@@ -311,6 +401,13 @@ Panel {
       if (root.hasOverlap) return "error: displays overlap"
       root.applyLive()
       return "applied"
+    }
+
+    // Confirms a pending Apply so the auto-revert countdown stands down.
+    function keep(): string {
+      if (!root.applySnapshot) return "nothing to keep"
+      root.keepApplied()
+      return "kept"
     }
 
     function save(): string {
@@ -330,7 +427,8 @@ Panel {
         bounds: root.layoutBounds,
         dirty: root.dirty,
         mirrorLatched: root.mirrorLatched,
-        overlaps: root.overlapPairs
+        overlaps: root.overlapPairs,
+        revertCountdown: root.revertCountdown
       })
     }
   }
@@ -358,7 +456,40 @@ Panel {
   Process {
     id: applyProc
     stdout: StdioCollector { waitForEnd: true }
-    onRunningChanged: if (!running) root.refresh()
+    stderr: StdioCollector { id: applyErrors; waitForEnd: true }
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode === 0) {
+        // Don't celebrate yet: if the user can't see the result (wrong mode,
+        // black screen) the countdown puts everything back on its own.
+        root.revertCountdown = 15
+      } else {
+        console.log("monitor-arranger: apply failed: " + applyErrors.text)
+        root.restoreSnapshot("Apply failed — restored the previous arrangement.", "error")
+      }
+      root.refresh()
+    }
+  }
+
+  // Applies the pre-Apply snapshot back. Separate from applyProc so a
+  // restore's own exit can't be mistaken for a fresh Apply and re-arm the
+  // countdown.
+  Process {
+    id: restoreProc
+    stdout: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode, exitStatus) { root.refresh() }
+  }
+
+  // Ticks the Apply countdown; runs whether or not the panel is open, since
+  // a blacked-out display is exactly the case where it can't be.
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.revertCountdown > 0
+    onTriggered: {
+      root.revertCountdown--
+      if (root.revertCountdown <= 0)
+        root.restoreSnapshot("Apply wasn't confirmed — restored the previous arrangement. Your edits are still here.", "warn")
+    }
   }
 
   Process {
@@ -373,6 +504,8 @@ Panel {
         } else if (result === "saved-with-errors") {
           root.dirty = false
           root.setStatus("Saved, but Hyprland reported config errors.", "warn")
+        } else if (result === "missing-helper") {
+          root.setStatus("Helper missing or not executable: bin/omarchy-monitor-arranger", "error")
         } else {
           root.setStatus("Save failed — see the shell log.", "error")
         }
@@ -395,7 +528,9 @@ Panel {
 
   Timer {
     interval: 4000
-    running: root.opened && !root.dirty
+    // Never fire mid-drag: adoptLive would reassign `monitors`, rebuild the
+    // Repeater's delegates, and drop the press state out of the gesture.
+    running: root.opened && !root.dirty && root.dragIndex < 0
     repeat: true
     onTriggered: root.refresh()
   }
@@ -441,6 +576,17 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      // x mirrors the Active toggle, which pointer users reach in the detail
+      // section but keyboard users otherwise can't.
+      onDeleteRequested: root.toggleEnabled(root.selectedIndex)
+      // Shifted vim keys nudge the selected display; unshifted ones move the
+      // cursor via onMoveRequested above.
+      onTextKey: function(t) {
+        if (t === "H") root.nudgeSelected(-1, 0)
+        else if (t === "L") root.nudgeSelected(1, 0)
+        else if (t === "K") root.nudgeSelected(0, -1)
+        else if (t === "J") root.nudgeSelected(0, 1)
+      }
 
       ScrollView {
         id: scrollArea
@@ -547,16 +693,42 @@ Panel {
               font.pixelSize: Style.font.bodySmall
             }
 
+            // Snap guides: a line on the edge the dragged tile latched onto.
+            // z above the tiles, or the line vanishes exactly where it
+            // matters — along the edge shared with the neighbour.
+            Rectangle {
+              z: 1
+              visible: root.dragIndex >= 0 && root.dragEdgeX !== null
+              x: canvasFrame.originX + (Number(root.dragEdgeX) - canvasFrame.box.x) * canvasFrame.k
+              y: 0
+              width: 1
+              height: canvasFrame.height
+              color: Color.accent
+              opacity: 0.7
+            }
+            Rectangle {
+              z: 1
+              visible: root.dragIndex >= 0 && root.dragEdgeY !== null
+              x: 0
+              y: canvasFrame.originY + (Number(root.dragEdgeY) - canvasFrame.box.y) * canvasFrame.k
+              width: canvasFrame.width
+              height: 1
+              color: Color.accent
+              opacity: 0.7
+            }
+
             Repeater {
               model: root.monitors
 
+              // Disabled displays stay on the canvas as parked ghosts so they
+              // can still be clicked and re-enabled; hiding them left the
+              // Active toggle unreachable by pointer.
               MonitorTile {
                 required property var modelData
                 required property int index
                 monitor: modelData
                 tileIndex: index
                 frame: canvasFrame
-                visible: modelData.enabled
               }
             }
           }
@@ -566,6 +738,17 @@ Panel {
           // The mirror toggle is the one that bites: Omarchy loads
           // `default.hypr.toggles` after `hypr.monitors`, so while it is
           // latched it overrides whatever this widget writes.
+          // The Apply confirmation. Not a transient status: it stays until
+          // the user keeps the layout or the countdown restores the old one.
+          Notice {
+            visible: root.revertCountdown > 0
+            icon: "󰔟"
+            text: "Keep this arrangement? Reverting in " + root.revertCountdown + "s."
+            actionText: "Keep"
+            kind: "warn"
+            onActivated: root.keepApplied()
+          }
+
           Notice {
             visible: root.mirrorLatched
             icon: "󰍹"
@@ -589,8 +772,19 @@ Panel {
           }
 
           Notice {
+            visible: root.mirroredDisplays.length > 0
+            icon: "󰍺"
+            text: root.mirroredDisplays.join(" · ")
+              + ". Saving writes positioned rules, which turns mirroring into extending."
+            kind: "warn"
+            actionText: ""
+          }
+
+          Notice {
             visible: root.statusMessage !== ""
-            icon: root.statusKind === "error" ? "󰀦" : "󰋼"
+            // warn shares the alert glyph: its tint is already urgent, and an
+            // info icon under an urgent tint reads as a broken theme.
+            icon: root.statusKind === "info" ? "󰋼" : "󰀦"
             text: root.statusMessage
             kind: root.statusKind
             actionText: ""
@@ -672,6 +866,26 @@ Panel {
                 return out
               }
               onChanged: function(value) { root.setScale(root.selectedIndex, parseFloat(value)) }
+            }
+
+            // Hyprland silently nudges a scale that doesn't divide the pixel
+            // size to an integer, so the saved value and the reloaded value
+            // drift apart. Flag it, and suggest the nearest scale that won't.
+            Text {
+              width: parent.width
+              visible: root.selected && root.selected.enabled && !Model.scaleIsExact(root.selected)
+              text: {
+                if (!root.selected) return ""
+                var s = Model.nearestExactScale(root.selected)
+                var base = "Scale " + Model.formatScale(root.selected.scale) + " doesn't divide "
+                  + root.selected.pixelWidth + "×" + root.selected.pixelHeight
+                  + " evenly — Hyprland will adjust it."
+                return s !== null ? base + " Closest exact: " + Model.formatScale(s) + "." : base
+              }
+              color: Qt.darker(root.fg, 1.4)
+              font.family: root.uiFont
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             // ---------- Orientation ----------
@@ -764,7 +978,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Apply previews in this session · Save writes monitors.lua"
+            text: "Apply previews with auto-revert · Save writes monitors.lua · Shift+HJKL nudges"
             color: Qt.darker(root.fg, 1.4)
             font.family: root.uiFont
             font.pixelSize: Style.font.caption
@@ -794,17 +1008,34 @@ Panel {
     readonly property real logicalY: dragging ? root.dragY : (monitor ? monitor.y : 0)
     readonly property var logicalSize: monitor ? Model.logicalSize(monitor) : { w: 0, h: 0 }
 
-    x: frame ? frame.originX + (logicalX - frame.box.x) * frame.k : 0
-    y: frame ? frame.originY + (logicalY - frame.box.y) * frame.k : 0
-    width: frame ? logicalSize.w * frame.k : 0
-    height: frame ? logicalSize.h * frame.k : 0
+    // A disabled display has no place in the layout, but hiding it entirely
+    // made it unselectable — and its Active toggle unreachable — by pointer.
+    // Park it as a small ghost along the frame's bottom edge instead.
+    readonly property bool parked: monitor ? !monitor.enabled : false
+    readonly property int parkSlot: {
+      var n = 0
+      for (var i = 0; i < tileIndex && i < root.monitors.length; i++)
+        if (root.monitors[i] && !root.monitors[i].enabled) n++
+      return n
+    }
+    readonly property real parkW: Style.space(56)
+    readonly property real parkH: Style.space(34)
+
+    x: !frame ? 0 : parked
+      ? frame.inset + parkSlot * (parkW + Style.space(6))
+      : frame.originX + (logicalX - frame.box.x) * frame.k
+    y: !frame ? 0 : parked
+      ? frame.height - frame.inset - parkH
+      : frame.originY + (logicalY - frame.box.y) * frame.k
+    width: !frame ? 0 : (parked ? parkW : logicalSize.w * frame.k)
+    height: !frame ? 0 : (parked ? parkH : logicalSize.h * frame.k)
 
     radius: Style.cornerRadius
     color: isSelected ? Style.selectedFillFor(root.fg, Color.accent)
                       : Style.normalFillFor(root.fg, Color.accent)
     border.width: isSelected ? Math.max(1, Style.space(2)) : Style.normalBorderWidth
     border.color: isSelected ? Color.accent : Style.normalBorderFor(root.fg, Color.accent)
-    opacity: dragging ? 0.85 : 1.0
+    opacity: parked ? 0.45 : (dragging ? 0.85 : 1.0)
 
     Behavior on x { enabled: !tile.dragging; NumberAnimation { duration: 90 } }
     Behavior on y { enabled: !tile.dragging; NumberAnimation { duration: 90 } }
@@ -827,9 +1058,10 @@ Panel {
 
       Text {
         width: parent.width
-        // Hidden on tiles too small to hold two lines of text.
-        visible: tile.height > Style.space(38)
-        text: tile.logicalSize.w + "×" + tile.logicalSize.h
+        // Hidden on tiles too small to hold two lines of text; parked tiles
+        // always show "off" so the ghost explains itself.
+        visible: tile.parked || tile.height > Style.space(38)
+        text: tile.parked ? "off" : tile.logicalSize.w + "×" + tile.logicalSize.h
         color: Qt.darker(root.fg, 1.4)
         font.family: root.uiFont
         font.pixelSize: Style.font.caption
@@ -842,7 +1074,8 @@ Panel {
       id: tileMouse
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+      cursorShape: tile.parked ? Qt.PointingHandCursor
+                               : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
 
       property real originLogicalX: 0
       property real originLogicalY: 0
@@ -853,6 +1086,9 @@ Panel {
         root.cursorActive = true
         root.focusSection = "displays"
         root.cursorIndex = tile.tileIndex
+        // A parked ghost is click-to-select only; there is nowhere sensible
+        // to drag a display that occupies no space in the layout.
+        if (tile.parked) return
         originLogicalX = tile.monitor.x
         originLogicalY = tile.monitor.y
         origin = mapToItem(tile.frame, mouse.x, mouse.y)
@@ -862,7 +1098,7 @@ Panel {
       }
 
       onPositionChanged: function(mouse) {
-        if (!pressed || !tile.frame || tile.frame.k <= 0) return
+        if (!pressed || root.dragIndex !== tile.tileIndex || !tile.frame || tile.frame.k <= 0) return
         var here = mapToItem(tile.frame, mouse.x, mouse.y)
         var size = tile.logicalSize
         var wanted = {
@@ -884,6 +1120,9 @@ Panel {
         var box = tile.frame.box
         root.dragX = Math.max(box.x - size.w, Math.min(box.x + box.w, snapped.x))
         root.dragY = Math.max(box.y - size.h, Math.min(box.y + box.h, snapped.y))
+        // Guides only survive if the clamp didn't move the tile off its snap.
+        root.dragEdgeX = (snapped.guideX !== null && root.dragX === snapped.x) ? snapped.edgeX : null
+        root.dragEdgeY = (snapped.guideY !== null && root.dragY === snapped.y) ? snapped.edgeY : null
       }
 
       onReleased: {
@@ -891,13 +1130,19 @@ Panel {
         var x = root.dragX
         var y = root.dragY
         root.dragIndex = -1
+        root.dragEdgeX = null
+        root.dragEdgeY = null
         if (x !== tile.monitor.x || y !== tile.monitor.y) {
           root.moveTo(tile.tileIndex, x, y)
           root.monitors = Model.normalizeOrigin(root.monitors)
         }
       }
 
-      onCanceled: root.dragIndex = -1
+      onCanceled: {
+        root.dragIndex = -1
+        root.dragEdgeX = null
+        root.dragEdgeY = null
+      }
     }
   }
 
