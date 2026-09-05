@@ -28,6 +28,21 @@ display *arranger*, and the general-purpose Wayland tools — `nwg-displays`,
   carrying a palette of its own.
 - **Warns about the things that actually break layouts** — see below.
 
+## Requirements
+
+- **Omarchy 4.x.** The widget is a shell plugin (manifest `schemaVersion` 1)
+  and builds its UI from the shell's own components and `Style`/`Color`
+  singletons — those are internal shell API, so a much older or newer shell
+  may not load it. Developed against Omarchy 4.0.1 with Quickshell 0.3.1.
+- **Omarchy's Lua Hyprland config.** Live preview runs `hyprctl eval` with
+  `hl.monitor(...)` calls and saving writes `~/.config/hypr/monitors.lua`.
+  An install configured with classic `hyprland.conf` syntax will not work.
+
+No other dependencies: no extra packages, and nothing is assumed about the
+hardware — connector naming, mixed scales, portrait displays, and identical
+twin monitors are all handled. So far it has been exercised on a single
+three-display setup, so reports from other arrangements are very welcome.
+
 ## Install
 
 ```bash
@@ -49,7 +64,7 @@ Everything the widget generates lives inside a marked block:
 
 ```lua
 -- >>> omarchy-monitor-arranger >>>
-hl.monitor({ output = "desc:Dell Inc. DELL U2722D", mode = "2560x1440@60",
+hl.monitor({ output = "desc:Acme Inc. ACME Q27", mode = "2560x1440@60",
              position = "4608x0", scale = 1.25, transform = 1 })
 -- <<< omarchy-monitor-arranger <<<
 ```
@@ -69,10 +84,10 @@ monitor on `position = "auto"` makes Hyprland reflow it around the pinned ones
 on the next reload, which quietly undoes the arrangement.
 
 **External displays are matched by description, not connector name.**
-Connector names are not stable — a single Dell here has enumerated as `DP-1`,
-`DP-3`, `DP-5` and `DP-7` across replugs, and a rule keyed on the name stops
-matching after the first one. Internal panels are the exception: `eDP-1` never
-changes, while its description is an opaque vendor code.
+Connector names are not stable — the same monitor can enumerate as `DP-1` one
+day and `DP-3` after a replug or a dock change, and a rule keyed on the name
+stops matching after the first one. Internal panels are the exception:
+`eDP-1` never changes, while its description is an opaque vendor code.
 
 ## Two Omarchy specifics this handles
 

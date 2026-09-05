@@ -548,8 +548,8 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     // A layout grid rather than a monitor glyph: Omarchy's own Display widget
-    // sits a few slots away on the same bar and already owns 󰍹/󰍺, so a
-    // monitor icon here is indistinguishable from it.
+    // usually shares the bar and already owns 󰍹/󰍺, so a monitor icon here
+    // would be indistinguishable from it.
     text: "󰕰"
     onPressed: function(b) { root.toggle() }
   }

@@ -200,14 +200,15 @@ function currentModeLabel(monitor) {
 
 // ----------------------------------------------------------------- identity
 //
-// Connector names are not stable: this machine's Dell has enumerated as DP-1,
-// DP-3, DP-5 and DP-7 across replugs, and a rule keyed on the name silently
-// stops matching after one. Descriptions survive that, so external displays
-// are written as `desc:<make> <model>` whenever that is unambiguous.
+// Connector names are not stable: the same external display can enumerate as
+// DP-1 one day and DP-3 after a replug or a dock change, and a rule keyed on
+// the name silently stops matching after one. Descriptions survive that, so
+// external displays are written as `desc:<make> <model>` whenever that is
+// unambiguous.
 //
-// Internal panels are the exception. Their descriptions are vendor codes like
-// "Sharp Corporation 0x1548" while `eDP-1` never changes, so the name is both
-// stabler and more readable.
+// Internal panels are the exception. Their descriptions are opaque vendor
+// codes ("Some Corporation 0x1234") while `eDP-1` never changes, so the name
+// is both stabler and more readable.
 function outputKey(monitor, monitors) {
   if (!monitor) return ""
   if (monitor.internal) return monitor.name

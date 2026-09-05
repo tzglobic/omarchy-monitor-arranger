@@ -15,18 +15,18 @@ function ok(name, condition) {
   console.error("FAIL " + name)
 }
 
-// A three-display fixture mirroring a laptop + 4K landscape + rotated Dell.
+// A three-display fixture: laptop panel + 4K landscape + rotated QHD.
 var FIXTURE = [
-  { name: "eDP-1", description: "Sharp Corporation 0x1548", make: "Sharp Corporation",
-    model: "0x1548", width: 1920, height: 1200, refreshRate: 59.95, x: 0, y: 0,
+  { name: "eDP-1", description: "Vendor Corp 0x1234", make: "Vendor Corp",
+    model: "0x1234", width: 1920, height: 1200, refreshRate: 59.95, x: 0, y: 0,
     scale: 1.25, transform: 0, disabled: false, focused: false,
     availableModes: ["1920x1200@59.95Hz"] },
-  { name: "DP-7", description: "Dell Inc. DELL U2722D CFPTS83", make: "Dell Inc.",
-    model: "DELL U2722D", width: 2560, height: 1440, refreshRate: 59.951, x: 4608, y: 0,
+  { name: "DP-7", description: "Acme Inc. ACME Q27 SERIAL01", make: "Acme Inc.",
+    model: "ACME Q27", width: 2560, height: 1440, refreshRate: 59.951, x: 4608, y: 0,
     scale: 1.25, transform: 1, disabled: false, focused: false,
     availableModes: ["2560x1440@59.95Hz", "1920x1080@60.00Hz", "1920x1080@59.94Hz"] },
-  { name: "DP-9", description: "Philips PHL BDM4037U", make: "Philips",
-    model: "PHL BDM4037U", width: 3840, height: 2160, refreshRate: 59.996, x: 1536, y: 0,
+  { name: "DP-9", description: "Globex GX40 UHD", make: "Globex",
+    model: "GX40 UHD", width: 3840, height: 2160, refreshRate: 59.996, x: 1536, y: 0,
     scale: 1.25, transform: 0, disabled: false, focused: true,
     availableModes: ["3840x2160@60.00Hz"] }
 ]
@@ -45,13 +45,13 @@ check("bounds span the desktop", M.bounds(mons), { x: 0, y: 0, w: 5760, h: 2048 
 
 // --- identity: descriptions beat connector names for externals
 check("internal uses connector name", M.outputKey(mons[0], mons), "eDP-1")
-check("external uses description", M.outputKey(mons[1], mons), "desc:Dell Inc. DELL U2722D")
+check("external uses description", M.outputKey(mons[1], mons), "desc:Acme Inc. ACME Q27")
 
 // Two identical panels cannot be told apart by description, so fall back.
 var twins = M.parseMonitors([
-  { name: "DP-1", make: "Dell Inc.", model: "DELL U2722D", width: 2560, height: 1440,
+  { name: "DP-1", make: "Acme Inc.", model: "ACME Q27", width: 2560, height: 1440,
     x: 0, y: 0, scale: 1, transform: 0, disabled: false, availableModes: [] },
-  { name: "DP-2", make: "Dell Inc.", model: "DELL U2722D", width: 2560, height: 1440,
+  { name: "DP-2", make: "Acme Inc.", model: "ACME Q27", width: 2560, height: 1440,
     x: 2560, y: 0, scale: 1, transform: 0, disabled: false, availableModes: [] }
 ])
 check("ambiguous descriptions fall back to name", M.outputKey(twins[0], twins), "DP-1")
