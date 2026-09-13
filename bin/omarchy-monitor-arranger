@@ -56,7 +56,21 @@ cmd_mirror_off() {
   echo "ok"
 }
 
-cmd_save() {
+validate_markers() {
+  # A partial/duplicated block is ambiguous: replacing it can delete user
+  # configuration. Input requires exactly one block; the existing file may
+  # have none. Never attempt to repair malformed markers during Save.
+  awk -v start="$BLOCK_START" -v end="$BLOCK_END" -v required="$1" '
+    $0 == start { if (opened || count) bad = 1; opened = 1; count++; next }
+    $0 == end { if (!opened) bad = 1; opened = 0 }
+    END { exit (bad || opened || (required && count != 1)) ? 1 : 0 }
+  '
+}
+
+cmd_save() (
+  # A subshell scopes cleanup to this invocation, including error exits.
+  local blockfile="" tmp=""
+  trap '[[ -z $blockfile ]] || rm -f -- "$blockfile"; [[ -z $tmp ]] || rm -f -- "$tmp"' EXIT
   local block
   block=$(cat)
 
@@ -66,18 +80,24 @@ cmd_save() {
   grep -q "hl.monitor(" <<<"$block" || fail "refusing to write: no hl.monitor() calls in input"
   grep -q "^$BLOCK_START\$" <<<"$block" || fail "refusing to write: block is missing its start marker"
   grep -q "^$BLOCK_END\$" <<<"$block" || fail "refusing to write: block is missing its end marker"
+  validate_markers 1 <<<"$block" || fail "refusing to write: malformed input markers"
+
+  if [[ -f $MONITORS_LUA ]]; then
+    validate_markers 0 <"$MONITORS_LUA" || fail "refusing to write: malformed existing markers"
+  fi
 
   mkdir -p "$(dirname -- "$MONITORS_LUA")" "$BACKUP_DIR"
   [[ -f $MONITORS_LUA ]] || : >"$MONITORS_LUA"
 
-  # Millisecond precision: two saves in the same second would otherwise write
-  # the same backup name and the older one would be lost.
-  cp -p -- "$MONITORS_LUA" "$BACKUP_DIR/monitors.lua.$(date +%Y%m%d-%H%M%S-%3N)"
-  local stale
-  mapfile -t stale < <(ls -1t "$BACKUP_DIR"/monitors.lua.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
-  [[ ${#stale[@]} -eq 0 ]] || rm -f -- "${stale[@]}"
+  # Atomically allocate a unique backup, even for simultaneous saves. Do not
+  # copy the source mtime: retention must use backup creation order.
+  local backup stale
+  backup=$(mktemp "$BACKUP_DIR/monitors.lua.$(date +%Y%m%d-%H%M%S).XXXXXX")
+  cat -- "$MONITORS_LUA" >"$backup"
+  while IFS= read -r stale; do
+    rm -f -- "$stale"
+  done < <(ls -1t "$BACKUP_DIR"/monitors.lua.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
 
-  local blockfile tmp
   blockfile=$(mktemp)
   printf '%s\n' "$block" >"$blockfile"
 
@@ -113,7 +133,7 @@ cmd_save() {
     exit 0
   fi
   echo "ok"
-}
+)
 
 case "${1:-}" in
 save) cmd_save ;;

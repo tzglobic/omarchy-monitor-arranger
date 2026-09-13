@@ -1,0 +1,8 @@
+{
+  "name": "omarchy-monitor-arranger",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node test/model.test.js && node test/security.test.js && node test/panel-security.test.js && bash test/splice.test.sh"
+  }
+}

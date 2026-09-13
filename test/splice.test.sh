@@ -76,6 +76,35 @@ check "input without markers rejected" "1" \
   "$(echo 'hl.monitor({ output = "eDP-1" })' | "$BIN" save >/dev/null 2>&1; echo $?)"
 ok "config intact after rejected writes" grep -q 'hl.env("GDK_SCALE", "1")' "$OMARCHY_MONITORS_LUA"
 
+# --- malformed markers must not consume unrelated config on Save
+cp "$OMARCHY_MONITORS_LUA" "$WORK/good.lua"
+for malformed in missing-end stray-end reversed duplicate nested; do
+  case "$malformed" in
+    missing-end) printf '%s\n' '-- >>> omarchy-monitor-arranger >>>' 'hl.monitor({})' 'user_setting = true' ;;
+    stray-end) printf '%s\n' 'user_setting = true' '-- <<< omarchy-monitor-arranger <<<' ;;
+    reversed) printf '%s\n' '-- <<< omarchy-monitor-arranger <<<' '-- >>> omarchy-monitor-arranger >>>' 'hl.monitor({})' ;;
+    duplicate) block one; block two ;;
+    nested) printf '%s\n' '-- >>> omarchy-monitor-arranger >>>'; block nested ;;
+  esac >"$WORK/malformed.lua"
+  cp "$WORK/malformed.lua" "$OMARCHY_MONITORS_LUA"
+  check "$malformed existing markers rejected" "1" "$(block fresh | "$BIN" save >/dev/null 2>&1; echo $?)"
+  ok "$malformed existing config unchanged" cmp -s "$WORK/malformed.lua" "$OMARCHY_MONITORS_LUA"
+  cp "$WORK/good.lua" "$OMARCHY_MONITORS_LUA"
+  check "$malformed input markers rejected" "1" "$("$BIN" save <"$WORK/malformed.lua" >/dev/null 2>&1; echo $?)"
+  ok "$malformed input leaves config unchanged" cmp -s "$WORK/good.lua" "$OMARCHY_MONITORS_LUA"
+done
+
+# --- clock collisions cannot overwrite a backup; backups stay private
+mkdir "$WORK/collision-backups"
+printf '#!/bin/bash\nprintf "20260913-120000\\n"\n' >"$WORK/stub/date"
+chmod +x "$WORK/stub/date"
+for i in 1 2 3; do
+  block "collision$i" | OMARCHY_ARRANGER_BACKUPS="$WORK/collision-backups" "$BIN" save >/dev/null
+done
+check "same timestamp keeps distinct backups" "3" "$(ls -1 "$WORK/collision-backups" | wc -l | tr -d ' ')"
+ok "backups private" test -z "$(find "$WORK/collision-backups" -type f -perm -004 -print)"
+rm "$WORK/stub/date"
+
 # --- backups accumulate but stay bounded
 ok "backups written" [ "$(ls -1 "$OMARCHY_ARRANGER_BACKUPS" | wc -l)" -ge 2 ]
 for i in $(seq 1 12); do block "bulk$i" | "$BIN" save >/dev/null; sleep 0.01; done

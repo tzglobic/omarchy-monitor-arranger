@@ -245,15 +245,26 @@ Panel {
   function applyLive() {
     if (hasOverlap) {
       setStatus("Displays overlap — move them apart first.", "error")
-      return
+      return false
     }
-    monitors = Model.normalizeOrigin(monitors)
+    var next = Model.normalizeOrigin(monitors)
+    var command
+    try {
+      command = evalScriptFor(next)
+      // Check the rollback before changing the live session as well.
+      evalScriptFor(applySnapshot || liveMonitors)
+    } catch (e) {
+      setStatus("Cannot apply: " + e.message, "error")
+      return false
+    }
+    monitors = next
     // A second Apply during the countdown keeps the original snapshot: the
     // state worth going back to is the one from before the first Apply.
     if (!applySnapshot) applySnapshot = Model.copyMonitors(liveMonitors)
     revertCountdown = 0
-    applyProc.command = evalScriptFor(monitors)
+    applyProc.command = command
     applyProc.running = true
+    return true
   }
 
   function keepApplied() {
@@ -265,9 +276,16 @@ Panel {
   // Push the pre-Apply snapshot back to the compositor. Used by the countdown
   // timeout, by a failed Apply, and by Revert while a countdown is running.
   function restoreSnapshot(message, kind) {
-    revertCountdown = 0
     if (!applySnapshot) return
-    restoreProc.command = evalScriptFor(applySnapshot)
+    var command
+    try {
+      command = evalScriptFor(applySnapshot)
+    } catch (e) {
+      setStatus("Cannot restore: " + e.message, "error")
+      return
+    }
+    revertCountdown = 0
+    restoreProc.command = command
     restoreProc.running = true
     applySnapshot = null
     setStatus(message, kind)
@@ -280,15 +298,21 @@ Panel {
   function save() {
     if (hasOverlap) {
       setStatus("Displays overlap — move them apart first.", "error")
-      return
+      return false
+    }
+    var next = Model.normalizeOrigin(monitors)
+    var stamp = Qt.formatDateTime(new Date(), "yyyy-MM-dd HH:mm")
+    var block
+    try {
+      block = Model.luaBlock(next, stamp)
+    } catch (e) {
+      setStatus("Cannot save: " + e.message, "error")
+      return false
     }
     // Saving is the strongest form of "keep": cancel any pending auto-revert.
     revertCountdown = 0
     applySnapshot = null
-    monitors = Model.normalizeOrigin(monitors)
-
-    var stamp = Qt.formatDateTime(new Date(), "yyyy-MM-dd HH:mm")
-    var block = Model.luaBlock(monitors, stamp)
+    monitors = next
 
     // Only the generated block crosses this boundary. The helper reads
     // monitors.lua and splices at write time, so an edit made to the file
@@ -300,6 +324,7 @@ Panel {
       '[ -x "$1" ] || { echo missing-helper; exit 0; }\nprintf "%s\\n" "$2" | "$1" save',
       "arranger", root.helper, block]
     saveProc.running = true
+    return true
   }
 
   function clearMirror() {
@@ -399,8 +424,7 @@ Panel {
     // the registered target.
     function preview(): string {
       if (root.hasOverlap) return "error: displays overlap"
-      root.applyLive()
-      return "applied"
+      return root.applyLive() ? "applied" : "error: " + root.statusMessage
     }
 
     // Confirms a pending Apply so the auto-revert countdown stands down.
@@ -412,8 +436,7 @@ Panel {
 
     function save(): string {
       if (root.hasOverlap) return "error: displays overlap"
-      root.save()
-      return "saving"
+      return root.save() ? "saving" : "error: " + root.statusMessage
     }
 
     function revert(): string {
@@ -798,9 +821,14 @@ Panel {
             spacing: Style.spacing.rowGap
             visible: root.selected !== null
 
-            PanelSectionHeader {
-              foreground: root.fg
-              fontFamily: root.uiFont
+            Text {
+              width: parent.width
+              color: root.fg
+              font.family: root.uiFont
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
               text: root.selected
                 ? Model.shortLabel(root.selected).toUpperCase() + " · " + root.selected.name
                 : ""
@@ -809,7 +837,12 @@ Panel {
             Text {
               width: parent.width
               visible: root.selected !== null
-              text: root.selected ? Model.outputKey(root.selected, root.monitors) : ""
+              textFormat: Text.PlainText
+              text: {
+                if (!root.selected) return ""
+                try { return Model.outputKey(root.selected, root.monitors) }
+                catch (e) { return "Invalid monitor connector identifier" }
+              }
               color: Qt.darker(root.fg, 1.4)
               font.family: root.uiFont
               font.pixelSize: Style.font.caption
@@ -1048,6 +1081,7 @@ Panel {
       Text {
         width: parent.width
         text: tile.monitor ? Model.shortLabel(tile.monitor) : ""
+        textFormat: Text.PlainText
         color: root.fg
         font.family: root.uiFont
         font.pixelSize: Style.font.caption
@@ -1185,6 +1219,7 @@ Panel {
 
       Text {
         text: notice.text
+        textFormat: Text.PlainText
         color: root.fg
         font.family: root.uiFont
         font.pixelSize: Style.font.caption

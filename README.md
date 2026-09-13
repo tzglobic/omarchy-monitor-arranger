@@ -86,6 +86,9 @@ hl.monitor({ output = "desc:Acme Inc. ACME Q27", mode = "2560x1440@60",
 Anything outside those markers is yours and is never touched. Saving replaces
 the block in place; it never stacks a second one. Each save first copies the
 current file into `~/.local/state/omarchy/monitor-arranger/` (last 10 kept).
+Backups use unique private files. Save refuses malformed or duplicate block
+markers to avoid deleting unrelated config. See [the security review](SECURITY_REVIEW.md)
+for validation coverage and remaining limitations.
 
 Three deliberate choices are worth knowing about:
 
@@ -102,6 +105,13 @@ Connector names are not stable — the same monitor can enumerate as `DP-1` one
 day and `DP-3` after a replug or a dock change, and a rule keyed on the name
 stops matching after the first one. Internal panels are the exception:
 `eDP-1` never changes, while its description is an opaque vendor code.
+
+Monitor metadata is untrusted. Connector identifiers must contain 1–128
+ASCII letters, digits, dots, underscores or hyphens, starting with a letter
+or digit; invalid identifiers stop Apply/Save. Descriptions containing control
+characters fall back to the connector. Every generated Lua string uses a
+Lua-specific encoder, and generated comments cannot contain metadata line
+breaks. This applies to preview, rollback and saved configuration alike.
 
 ## Two Omarchy specifics this handles
 
@@ -169,9 +179,15 @@ did, until `test/splice.test.sh` started covering that case.
 ```bash
 node test/model.test.js
 bash test/splice.test.sh
+node test/security.test.js  # requires Lua 5.1+; override with LUA=/path/to/lua
+node test/panel-security.test.js
 ```
 
 Neither touches your real config or the running compositor.
+
+The security suite executes generated Lua with a stubbed `hl.monitor` in a
+restricted environment, checking string round trips, rejected connectors,
+and harmless injection payloads in both preview calls and saved blocks.
 
 ## Developing
 
