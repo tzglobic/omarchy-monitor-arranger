@@ -42,6 +42,21 @@ ok("transform 3 is portrait", M.isPortrait(3))
 ok("transform 2 is not portrait", !M.isPortrait(2))
 ok("transform 5 (flipped 90) swaps", M.transformSwapsAxes(5))
 check("bounds span the desktop", M.bounds(mons), { x: 0, y: 0, w: 5760, h: 2048 })
+// The canvas view leaves room for the widest and tallest display on every
+// side, so one can be dragged above or below the layout without leaving it.
+check("view pads by the largest display", M.viewBounds(mons),
+  { x: -3072, y: -2048, w: 5760 + 3072 * 2, h: 2048 * 3 })
+
+// --- vertical stacking: one display directly above another is a clean layout
+var stacked = M.parseMonitors([
+  { name: "A", width: 1920, height: 1080, x: 0, y: 1080, scale: 1, disabled: false, availableModes: [] },
+  { name: "B", width: 1920, height: 1080, x: 1920, y: 1080, scale: 1, disabled: false, availableModes: [] }
+])
+var snapAbove = M.snapPosition({ x: 10, y: 15, w: 1920, h: 1080 }, [M.rectOf(stacked[0])], 40)
+check("snaps flush above a neighbour", { x: snapAbove.x, y: snapAbove.y }, { x: 0, y: 0 })
+stacked[1].x = snapAbove.x
+stacked[1].y = snapAbove.y
+check("stacked displays do not overlap", M.overlaps(stacked).length, 0)
 
 // --- identity: descriptions beat connector names for externals
 check("internal uses connector name", M.outputKey(mons[0], mons), "eDP-1")

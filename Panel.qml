@@ -620,7 +620,7 @@ Panel {
         Binding {
           target: scrollArea.contentItem
           property: "interactive"
-          value: panelColumn.implicitHeight > scrollArea.height
+          value: panelColumn.implicitHeight > scrollArea.height && root.dragIndex < 0
         }
 
         Column {
@@ -681,7 +681,7 @@ Panel {
           Rectangle {
             id: canvasFrame
             width: parent.width
-            implicitHeight: Style.space(168)
+            implicitHeight: Style.space(240)
             radius: Style.cornerRadius
             color: Style.normalFillFor(root.fg, Color.accent)
             border.width: Style.normalBorderWidth
@@ -690,20 +690,22 @@ Panel {
             // frame rather than painted over the controls below it.
             clip: true
 
-            // Logical-pixels-to-screen-pixels factor. The bounds are inflated
-            // before fitting so there is room to drag a display outside the
-            // current arrangement and attach it on the far side.
+            // Logical-pixels-to-screen-pixels factor. `box` is the layout
+            // itself (and what drags are clamped to); `view` is what gets
+            // fitted: the layout plus a display's worth of room on every
+            // side, so a display can be dragged above, below, or beside the
+            // arrangement and stay visible while it snaps there.
             readonly property real inset: Style.space(10)
-            readonly property real headroom: 1.25
             readonly property real availW: width - inset * 2
             readonly property real availH: height - inset * 2
             readonly property var box: root.layoutBounds
+            readonly property var view: Model.viewBounds(root.monitors)
             readonly property real k: {
-              if (box.w <= 0 || box.h <= 0) return 0.02
-              return Math.min(availW / (box.w * headroom), availH / (box.h * headroom))
+              if (view.w <= 0 || view.h <= 0) return 0.02
+              return Math.min(availW / view.w, availH / view.h)
             }
-            readonly property real drawW: box.w * k
-            readonly property real drawH: box.h * k
+            readonly property real drawW: view.w * k
+            readonly property real drawH: view.h * k
             readonly property real originX: inset + (availW - drawW) / 2
             readonly property real originY: inset + (availH - drawH) / 2
 
@@ -722,7 +724,7 @@ Panel {
             Rectangle {
               z: 1
               visible: root.dragIndex >= 0 && root.dragEdgeX !== null
-              x: canvasFrame.originX + (Number(root.dragEdgeX) - canvasFrame.box.x) * canvasFrame.k
+              x: canvasFrame.originX + (Number(root.dragEdgeX) - canvasFrame.view.x) * canvasFrame.k
               y: 0
               width: 1
               height: canvasFrame.height
@@ -733,7 +735,7 @@ Panel {
               z: 1
               visible: root.dragIndex >= 0 && root.dragEdgeY !== null
               x: 0
-              y: canvasFrame.originY + (Number(root.dragEdgeY) - canvasFrame.box.y) * canvasFrame.k
+              y: canvasFrame.originY + (Number(root.dragEdgeY) - canvasFrame.view.y) * canvasFrame.k
               width: canvasFrame.width
               height: 1
               color: Color.accent
@@ -1056,10 +1058,10 @@ Panel {
 
     x: !frame ? 0 : parked
       ? frame.inset + parkSlot * (parkW + Style.space(6))
-      : frame.originX + (logicalX - frame.box.x) * frame.k
+      : frame.originX + (logicalX - frame.view.x) * frame.k
     y: !frame ? 0 : parked
       ? frame.height - frame.inset - parkH
-      : frame.originY + (logicalY - frame.box.y) * frame.k
+      : frame.originY + (logicalY - frame.view.y) * frame.k
     width: !frame ? 0 : (parked ? parkW : logicalSize.w * frame.k)
     height: !frame ? 0 : (parked ? parkH : logicalSize.h * frame.k)
 
@@ -1108,6 +1110,11 @@ Panel {
       id: tileMouse
       anchors.fill: parent
       hoverEnabled: true
+      // The panel scrolls vertically once its content outgrows the popup,
+      // and its Flickable grabs any vertical drag past the threshold. That
+      // cancels the gesture and snaps the tile back to where it started —
+      // exactly when dragging a display above or below another.
+      preventStealing: true
       cursorShape: tile.parked ? Qt.PointingHandCursor
                                : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
 

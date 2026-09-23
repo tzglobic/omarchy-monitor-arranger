@@ -67,6 +67,22 @@ function bounds(monitors) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
 }
 
+// The area the canvas frames: the layout plus, on every side, room for the
+// largest display. A drag may park a display flush against any edge of the
+// layout — including above or below it — so the canvas has to show that
+// much space, or a display stacked vertically is dragged out of sight.
+function viewBounds(monitors) {
+  var box = bounds(monitors)
+  var active = enabledOnly(monitors)
+  var padW = 0, padH = 0
+  for (var i = 0; i < active.length; i++) {
+    var size = logicalSize(active[i])
+    if (size.w > padW) padW = size.w
+    if (size.h > padH) padH = size.h
+  }
+  return { x: box.x - padW, y: box.y - padH, w: box.w + padW * 2, h: box.h + padH * 2 }
+}
+
 function enabledOnly(monitors) {
   var out = []
   for (var i = 0; i < (monitors || []).length; i++) {
@@ -460,6 +476,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     transformSwapsAxes: transformSwapsAxes, transformLabel: transformLabel, isPortrait: isPortrait,
     rotatedPixels: rotatedPixels, logicalSize: logicalSize, rectOf: rectOf, bounds: bounds,
+    viewBounds: viewBounds,
     enabledOnly: enabledOnly, normalizeOrigin: normalizeOrigin, isInternal: isInternal,
     copyMonitors: copyMonitors, scaleIsExact: scaleIsExact, nearestExactScale: nearestExactScale,
     parseMonitors: parseMonitors, parseModes: parseModes, modeLabel: modeLabel,
