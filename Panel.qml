@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Ui
 import qs.Commons
 import "Model.js" as Model
@@ -49,6 +50,30 @@ Panel {
   // its own — the countdown must not depend on the panel being open.
   property var applySnapshot: null
   property int revertCountdown: 0
+
+  // Alignment mode: full-screen rulers on every display while one display
+  // (alignIndex) slides along the edge it shares with alignPartner. Nothing
+  // reaches the compositor until the result is applied from the panel; the
+  // overlays only render `alignMonitors`, the working copy plus the offset.
+  property bool alignMode: false
+  property int alignIndex: -1
+  property int alignPartner: -1
+  property string alignAxis: "y"
+  property int alignOffset: 0
+  property var alignLimits: ({ min: 0, max: 0 })
+  // Layout coordinate along alignAxis under the pointer, on whichever screen
+  // it is on; every overlay draws its guide line there.
+  property var alignPointer: null
+
+  readonly property var alignMonitors: {
+    if (!alignMode || alignIndex < 0 || alignIndex >= monitors.length) return monitors
+    var out = monitors.slice()
+    var moved = {}
+    for (var key in monitors[alignIndex]) moved[key] = monitors[alignIndex][key]
+    moved[alignAxis] = (Number(moved[alignAxis]) || 0) + alignOffset
+    out[alignIndex] = moved
+    return out
+  }
 
   // Keyboard cursor, mirroring the shell's other panels: a section plus an
   // index inside it, shared with pointer hover so both drive one highlight.
@@ -108,7 +133,8 @@ Panel {
     liveMonitors = parsed
     // Never adopt mid-drag: reassigning `monitors` rebuilds the Repeater's
     // delegates and drops the press state out from under the gesture.
-    if (!dirty && dragIndex < 0) {
+    // Nor mid-alignment: the overlays hold indices into `monitors`.
+    if (!dirty && dragIndex < 0 && !alignMode) {
       monitors = Model.copyMonitors(parsed)   // independent copy to edit
       clampSelection()
     }
@@ -225,6 +251,82 @@ Panel {
     setStatus("Reverted to the live arrangement.", "info")
   }
 
+  // ------------------------------------------------------------- alignment
+
+  function indexOfOutput(name) {
+    for (var i = 0; i < monitors.length; i++) if (monitors[i].name === name) return i
+    return -1
+  }
+
+  // Slides the selected display along the first edge it shares with another.
+  function startAlign() {
+    var m = selected
+    if (!m || !m.enabled) {
+      setStatus("Select an active display to align.", "error")
+      return false
+    }
+    if (hasOverlap) {
+      setStatus("Displays overlap — move them apart first.", "error")
+      return false
+    }
+    var edges = Model.edgesOf(monitors, selectedIndex)
+    if (edges.length === 0) {
+      setStatus("This display doesn't touch another — place them edge to edge first.", "error")
+      return false
+    }
+    alignIndex = selectedIndex
+    alignPartner = edges[0].other
+    alignAxis = Model.sideAxis(edges[0].side)
+    alignLimits = Model.alignRange(monitors, alignIndex, alignPartner, alignAxis)
+    alignOffset = 0
+    alignPointer = null
+    alignMode = true
+    // The panel's own dismiss twins cover every other output; get out of the
+    // way of the overlays, and come back when alignment ends.
+    root.close()
+    return true
+  }
+
+  function nudgeAlign(delta) {
+    if (!alignMode) return
+    alignOffset = Math.max(alignLimits.min, Math.min(alignLimits.max, alignOffset + delta))
+  }
+
+  function finishAlign(keep) {
+    if (!alignMode) return
+    var index = alignIndex
+    var axis = alignAxis
+    var offset = alignOffset
+    alignMode = false
+    alignIndex = -1
+    alignPartner = -1
+    alignOffset = 0
+    alignPointer = null
+    if (keep && offset !== 0) {
+      var changes = {}
+      changes[axis] = (Number(monitors[index][axis]) || 0) + offset
+      updateMonitor(index, changes)
+      monitors = Model.normalizeOrigin(monitors)
+      setStatus("Shifted " + Model.shortLabel(monitors[index]) + " by " + (offset > 0 ? "+" : "")
+        + offset + " px — Apply to try it.", "info")
+    } else {
+      setStatus(keep ? "Alignment unchanged." : "Alignment cancelled.", "info")
+    }
+    root.open()
+  }
+
+  function handleAlignKey(event) {
+    var step = (event.modifiers & Qt.ShiftModifier) ? 10 : 1
+    var k = event.key
+    if (k === Qt.Key_Up || k === Qt.Key_Left || k === Qt.Key_K || k === Qt.Key_H) nudgeAlign(-step)
+    else if (k === Qt.Key_Down || k === Qt.Key_Right || k === Qt.Key_J || k === Qt.Key_L) nudgeAlign(step)
+    else if (k === Qt.Key_0) alignOffset = 0
+    else if (k === Qt.Key_Return || k === Qt.Key_Enter) finishAlign(true)
+    else if (k === Qt.Key_Escape) finishAlign(false)
+    else return
+    event.accepted = true
+  }
+
   // ------------------------------------------------------------- apply / save
 
   // One shell invocation for a whole monitor list. `set -e` so the first
@@ -337,7 +439,7 @@ Panel {
   function sectionCount(section) {
     if (section === "displays") return monitors.length
     if (section === "rotation") return transformPresets.length
-    if (section === "actions") return 4
+    if (section === "actions") return 5
     return 0
   }
 
@@ -377,8 +479,9 @@ Panel {
     if (focusSection === "rotation") { setTransform(selectedIndex, transformPresets[cursorIndex].value); return }
     if (focusSection === "actions") {
       if (cursorIndex === 0) autoArrange()
-      else if (cursorIndex === 1) revert()
-      else if (cursorIndex === 2) applyLive()
+      else if (cursorIndex === 1) startAlign()
+      else if (cursorIndex === 2) revert()
+      else if (cursorIndex === 3) applyLive()
       else save()
     }
   }
@@ -437,6 +540,23 @@ Panel {
     function save(): string {
       if (root.hasOverlap) return "error: displays overlap"
       return root.save() ? "saving" : "error: " + root.statusMessage
+    }
+
+    // Opens the on-screen rulers for the display selected in the panel.
+    function align(): string {
+      return root.startAlign() ? "aligning" : "error: " + root.statusMessage
+    }
+
+    // Close the rulers, keeping or discarding the offset (Enter / Esc).
+    function alignDone(): string {
+      if (!root.alignMode) return "not aligning"
+      root.finishAlign(true)
+      return "aligned"
+    }
+    function alignCancel(): string {
+      if (!root.alignMode) return "not aligning"
+      root.finishAlign(false)
+      return "cancelled"
     }
 
     function revert(): string {
@@ -620,7 +740,7 @@ Panel {
         Binding {
           target: scrollArea.contentItem
           property: "interactive"
-          value: panelColumn.implicitHeight > scrollArea.height
+          value: panelColumn.implicitHeight > scrollArea.height && root.dragIndex < 0
         }
 
         Column {
@@ -681,7 +801,7 @@ Panel {
           Rectangle {
             id: canvasFrame
             width: parent.width
-            implicitHeight: Style.space(168)
+            implicitHeight: Style.space(240)
             radius: Style.cornerRadius
             color: Style.normalFillFor(root.fg, Color.accent)
             border.width: Style.normalBorderWidth
@@ -690,20 +810,22 @@ Panel {
             // frame rather than painted over the controls below it.
             clip: true
 
-            // Logical-pixels-to-screen-pixels factor. The bounds are inflated
-            // before fitting so there is room to drag a display outside the
-            // current arrangement and attach it on the far side.
+            // Logical-pixels-to-screen-pixels factor. `box` is the layout
+            // itself (and what drags are clamped to); `view` is what gets
+            // fitted: the layout plus a display's worth of room on every
+            // side, so a display can be dragged above, below, or beside the
+            // arrangement and stay visible while it snaps there.
             readonly property real inset: Style.space(10)
-            readonly property real headroom: 1.25
             readonly property real availW: width - inset * 2
             readonly property real availH: height - inset * 2
             readonly property var box: root.layoutBounds
+            readonly property var view: Model.viewBounds(root.monitors)
             readonly property real k: {
-              if (box.w <= 0 || box.h <= 0) return 0.02
-              return Math.min(availW / (box.w * headroom), availH / (box.h * headroom))
+              if (view.w <= 0 || view.h <= 0) return 0.02
+              return Math.min(availW / view.w, availH / view.h)
             }
-            readonly property real drawW: box.w * k
-            readonly property real drawH: box.h * k
+            readonly property real drawW: view.w * k
+            readonly property real drawH: view.h * k
             readonly property real originX: inset + (availW - drawW) / 2
             readonly property real originY: inset + (availH - drawH) / 2
 
@@ -722,7 +844,7 @@ Panel {
             Rectangle {
               z: 1
               visible: root.dragIndex >= 0 && root.dragEdgeX !== null
-              x: canvasFrame.originX + (Number(root.dragEdgeX) - canvasFrame.box.x) * canvasFrame.k
+              x: canvasFrame.originX + (Number(root.dragEdgeX) - canvasFrame.view.x) * canvasFrame.k
               y: 0
               width: 1
               height: canvasFrame.height
@@ -733,7 +855,7 @@ Panel {
               z: 1
               visible: root.dragIndex >= 0 && root.dragEdgeY !== null
               x: 0
-              y: canvasFrame.originY + (Number(root.dragEdgeY) - canvasFrame.box.y) * canvasFrame.k
+              y: canvasFrame.originY + (Number(root.dragEdgeY) - canvasFrame.view.y) * canvasFrame.k
               width: canvasFrame.width
               height: 1
               color: Color.accent
@@ -977,7 +1099,7 @@ Panel {
             id: actionRow
             width: parent.width
             spacing: Style.spacing.sm
-            readonly property real cellWidth: (width - spacing * 3) / 4
+            readonly property real cellWidth: (width - spacing * 4) / 5
 
             ActionButton {
               width: actionRow.cellWidth
@@ -987,22 +1109,31 @@ Panel {
             }
             ActionButton {
               width: actionRow.cellWidth
-              text: "Revert"
+              text: "Align"
+              tooltipText: "Rulers on screen to line the selected display up with its neighbour"
               actionIndex: 1
+              enabled: root.selected !== null && root.selected.enabled && !root.hasOverlap
+                && Model.edgesOf(root.monitors, root.selectedIndex).length > 0
+              onClicked: root.startAlign()
+            }
+            ActionButton {
+              width: actionRow.cellWidth
+              text: "Revert"
+              actionIndex: 2
               enabled: root.dirty
               onClicked: root.revert()
             }
             ActionButton {
               width: actionRow.cellWidth
               text: "Apply"
-              actionIndex: 2
+              actionIndex: 3
               enabled: !root.hasOverlap
               onClicked: root.applyLive()
             }
             ActionButton {
               width: actionRow.cellWidth
               text: "Save"
-              actionIndex: 3
+              actionIndex: 4
               enabled: !root.hasOverlap
               highlight: true
               onClicked: root.save()
@@ -1022,7 +1153,282 @@ Panel {
     }
   }
 
+  // ------------------------------------------------------------- alignment overlays
+
+  // One full-screen overlay per output while aligning. Only instantiated in
+  // alignment mode, so there is no idle cost.
+  Variants {
+    model: root.alignMode ? Quickshell.screens : []
+
+    delegate: Component {
+      AlignOverlay {
+        required property var modelData
+        screen: modelData
+        monitorIndex: root.indexOfOutput(modelData.name)
+      }
+    }
+  }
+
   // ------------------------------------------------------------- components
+
+  // What one output shows while aligning: a light scrim, a numbered ruler
+  // along the edge shared by the display being moved and its partner, the
+  // pointer guide, and (on the moving display) the instructions. The rulers
+  // are numbered in layout coordinates, so the displays line up when the same
+  // numbers face each other across the bezel.
+  component AlignOverlay: PanelWindow {
+    id: overlay
+    property int monitorIndex: -1
+
+    readonly property var mon: (monitorIndex >= 0 && monitorIndex < root.alignMonitors.length)
+      ? root.alignMonitors[monitorIndex] : null
+    readonly property bool isMover: monitorIndex === root.alignIndex
+    readonly property bool isPartner: monitorIndex === root.alignPartner
+    readonly property bool vertical: root.alignAxis === "y"
+    // Layout coordinate of this screen's local 0 along the sliding axis.
+    readonly property real origin: mon ? Number(vertical ? mon.y : mon.x) || 0 : 0
+    readonly property real span: vertical ? height : width
+    // The side of this screen the ruler goes on: the shared edge, and only
+    // on the two displays being aligned.
+    readonly property string rulerSide: {
+      if (!mon || !(isMover || isPartner)) return ""
+      var edges = Model.edgesOf(root.alignMonitors, monitorIndex)
+      var other = isMover ? root.alignPartner : root.alignIndex
+      for (var i = 0; i < edges.length; i++) if (edges[i].other === other) return edges[i].side
+      return ""
+    }
+
+    // Fixed light-on-dark palette: the scrim is dark on any theme.
+    readonly property color ink: "white"
+    readonly property color inkDim: Qt.rgba(1, 1, 1, 0.6)
+
+    visible: root.alignMode && mon !== null && !!mon.enabled
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    anchors { top: true; bottom: true; left: true; right: true }
+    WlrLayershell.namespace: "omarchy-monitor-arranger-align"
+    WlrLayershell.layer: WlrLayer.Overlay
+    // Keys go to the moving display's overlay only; two exclusive surfaces
+    // would fight over focus.
+    WlrLayershell.keyboardFocus: isMover ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+
+    onVisibleChanged: if (visible && isMover) Qt.callLater(function() { keys.forceActiveFocus() })
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.45)
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onPositionChanged: function(mouse) {
+        root.alignPointer = overlay.origin + (overlay.vertical ? mouse.y : mouse.x)
+      }
+      onWheel: function(wheel) {
+        var step = (wheel.modifiers & Qt.ShiftModifier) ? 10 : 1
+        if (wheel.angleDelta.y !== 0) root.nudgeAlign(wheel.angleDelta.y > 0 ? -step : step)
+      }
+    }
+
+    Item {
+      id: keys
+      anchors.fill: parent
+      focus: overlay.isMover
+      Keys.onPressed: function(event) { root.handleAlignKey(event) }
+    }
+
+    AlignRuler {
+      visible: overlay.rulerSide !== ""
+      side: overlay.rulerSide
+      origin: overlay.origin
+      ink: overlay.ink
+    }
+
+    // Pointer guide: the same layout coordinate on every screen. Where it
+    // crosses the bezel is where the pointer crosses; aligned displays show
+    // it as one straight line.
+    Rectangle {
+      readonly property real at: root.alignPointer === null ? -10 : root.alignPointer - overlay.origin
+      visible: root.alignPointer !== null && at >= 0 && at <= overlay.span
+      x: overlay.vertical ? 0 : at - width / 2
+      y: overlay.vertical ? at - height / 2 : 0
+      width: overlay.vertical ? overlay.width : 2
+      height: overlay.vertical ? 2 : overlay.height
+      color: Color.accent
+
+      Text {
+        text: root.alignPointer === null ? "" : String(Math.round(root.alignPointer))
+        color: overlay.ink
+        font.family: root.uiFont
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        x: overlay.vertical ? overlay.width / 2 - width / 2 : 6
+        y: overlay.vertical ? -height - 4 : overlay.height / 2 - height / 2
+      }
+    }
+
+    // Instructions on the moving display; a short tag on the reference one.
+    Rectangle {
+      anchors.centerIn: parent
+      width: Math.min(overlay.width - Style.space(48), Style.space(overlay.isMover ? 480 : 360))
+      height: card.implicitHeight + Style.space(32)
+      radius: Style.cornerRadius
+      color: Qt.rgba(0, 0, 0, 0.75)
+      border.width: 1
+      border.color: Qt.rgba(1, 1, 1, 0.2)
+
+      // Clicks on the card must not reach the scrim below.
+      MouseArea { anchors.fill: parent }
+
+      Column {
+        id: card
+        anchors.centerIn: parent
+        width: parent.width - Style.space(40)
+        spacing: Style.space(10)
+
+        Text {
+          width: parent.width
+          text: overlay.isMover ? "ALIGN " + Model.shortLabel(overlay.mon).toUpperCase()
+            : overlay.isPartner ? "REFERENCE DISPLAY" : "NOT BEING ALIGNED"
+          color: overlay.inkDim
+          font.family: root.uiFont
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 2
+          horizontalAlignment: Text.AlignHCenter
+          textFormat: Text.PlainText
+        }
+
+        Text {
+          width: parent.width
+          visible: overlay.isMover
+          text: (root.alignOffset > 0 ? "+" : "") + root.alignOffset + " px"
+          color: overlay.ink
+          font.family: root.uiFont
+          font.pixelSize: Style.font.display
+          horizontalAlignment: Text.AlignHCenter
+        }
+
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          horizontalAlignment: Text.AlignHCenter
+          color: overlay.ink
+          font.family: root.uiFont
+          font.pixelSize: Style.font.bodySmall
+          text: overlay.isMover
+            ? "Move the pointer along the shared edge: the coloured line marks the same point on both "
+              + "screens. Shift this display until the line runs straight across the bezel and the "
+              + "same ruler numbers face each other."
+            : overlay.isPartner ? "This display stays put. The other one slides along the shared edge."
+            : "Only the two displays with rulers are being aligned."
+        }
+
+        Text {
+          width: parent.width
+          visible: overlay.isMover
+          wrapMode: Text.WordWrap
+          horizontalAlignment: Text.AlignHCenter
+          color: overlay.inkDim
+          font.family: root.uiFont
+          font.pixelSize: Style.font.caption
+          text: (overlay.vertical ? "↑ ↓ · J K" : "← → · H L") + " · wheel: 1 px   Shift: 10 px   0: reset\n"
+            + "Displays with different pixel density only line up exactly at one point — "
+            + "align where the pointer usually crosses."
+        }
+
+        Row {
+          visible: overlay.isMover
+          anchors.horizontalCenter: parent.horizontalCenter
+          spacing: Style.space(10)
+
+          Button {
+            text: "Cancel  Esc"
+            fontSize: Style.font.caption
+            foreground: overlay.ink
+            fontFamily: root.uiFont
+            bordered: true
+            onClicked: root.finishAlign(false)
+          }
+          Button {
+            text: "Done  ↵"
+            fontSize: Style.font.caption
+            foreground: overlay.ink
+            fontFamily: root.uiFont
+            bordered: true
+            active: true
+            onClicked: root.finishAlign(true)
+          }
+        }
+      }
+    }
+  }
+
+  // Numbered ruler along one side of a screen. Minor ticks every 10 logical
+  // px, longer ones every 50, labelled ones every 100. Labels are layout
+  // coordinates, identical on both sides of a shared edge.
+  component AlignRuler: Item {
+    id: ruler
+    property string side: ""
+    property real origin: 0
+    property color ink: "white"
+
+    readonly property bool vertical: side === "left" || side === "right"
+    readonly property real thickness: vertical ? Style.space(76) : Style.space(52)
+    readonly property real span: vertical ? height : width
+    readonly property var ticks: side === "" ? [] : Model.rulerTicks(origin, span, 10)
+
+    x: side === "right" ? parent.width - width : 0
+    y: side === "bottom" ? parent.height - height : 0
+    width: vertical ? thickness : parent.width
+    height: vertical ? parent.height : thickness
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.6)
+    }
+
+    Repeater {
+      model: ruler.ticks
+
+      Item {
+        required property var modelData
+        readonly property real len: modelData.major ? ruler.thickness * 0.42
+          : modelData.mid ? ruler.thickness * 0.26 : ruler.thickness * 0.14
+        readonly property real weight: modelData.major ? 2 : 1
+
+        Rectangle {
+          color: ruler.ink
+          opacity: modelData.major ? 1 : 0.75
+          width: ruler.vertical ? parent.len : parent.weight
+          height: ruler.vertical ? parent.weight : parent.len
+          // Ticks grow inward from the shared edge.
+          x: ruler.vertical
+            ? (ruler.side === "right" ? ruler.width - width : 0)
+            : modelData.at - width / 2
+          y: ruler.vertical
+            ? modelData.at - height / 2
+            : (ruler.side === "bottom" ? ruler.height - height : 0)
+        }
+
+        Text {
+          visible: modelData.major
+          text: String(modelData.value)
+          color: ruler.ink
+          font.family: root.uiFont
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          x: ruler.vertical
+            ? (ruler.side === "right" ? ruler.width - parent.len - width - 4 : parent.len + 4)
+            : modelData.at - width / 2
+          y: ruler.vertical
+            ? modelData.at - height / 2
+            : (ruler.side === "bottom" ? ruler.height - parent.len - height - 2 : parent.len + 2)
+        }
+      }
+    }
+  }
 
   // A display on the canvas. Position comes from the model, except for the
   // tile currently being dragged: that one reads the root's live drag
@@ -1056,10 +1462,10 @@ Panel {
 
     x: !frame ? 0 : parked
       ? frame.inset + parkSlot * (parkW + Style.space(6))
-      : frame.originX + (logicalX - frame.box.x) * frame.k
+      : frame.originX + (logicalX - frame.view.x) * frame.k
     y: !frame ? 0 : parked
       ? frame.height - frame.inset - parkH
-      : frame.originY + (logicalY - frame.box.y) * frame.k
+      : frame.originY + (logicalY - frame.view.y) * frame.k
     width: !frame ? 0 : (parked ? parkW : logicalSize.w * frame.k)
     height: !frame ? 0 : (parked ? parkH : logicalSize.h * frame.k)
 
@@ -1108,6 +1514,11 @@ Panel {
       id: tileMouse
       anchors.fill: parent
       hoverEnabled: true
+      // The panel scrolls vertically once its content outgrows the popup,
+      // and its Flickable grabs any vertical drag past the threshold. That
+      // cancels the gesture and snaps the tile back to where it started —
+      // exactly when dragging a display above or below another.
+      preventStealing: true
       cursorShape: tile.parked ? Qt.PointingHandCursor
                                : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
 

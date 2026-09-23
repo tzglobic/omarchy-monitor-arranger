@@ -42,6 +42,21 @@ ok("transform 3 is portrait", M.isPortrait(3))
 ok("transform 2 is not portrait", !M.isPortrait(2))
 ok("transform 5 (flipped 90) swaps", M.transformSwapsAxes(5))
 check("bounds span the desktop", M.bounds(mons), { x: 0, y: 0, w: 5760, h: 2048 })
+// The canvas view leaves room for the widest and tallest display on every
+// side, so one can be dragged above or below the layout without leaving it.
+check("view pads by the largest display", M.viewBounds(mons),
+  { x: -3072, y: -2048, w: 5760 + 3072 * 2, h: 2048 * 3 })
+
+// --- vertical stacking: one display directly above another is a clean layout
+var stacked = M.parseMonitors([
+  { name: "A", width: 1920, height: 1080, x: 0, y: 1080, scale: 1, disabled: false, availableModes: [] },
+  { name: "B", width: 1920, height: 1080, x: 1920, y: 1080, scale: 1, disabled: false, availableModes: [] }
+])
+var snapAbove = M.snapPosition({ x: 10, y: 15, w: 1920, h: 1080 }, [M.rectOf(stacked[0])], 40)
+check("snaps flush above a neighbour", { x: snapAbove.x, y: snapAbove.y }, { x: 0, y: 0 })
+stacked[1].x = snapAbove.x
+stacked[1].y = snapAbove.y
+check("stacked displays do not overlap", M.overlaps(stacked).length, 0)
 
 // --- identity: descriptions beat connector names for externals
 check("internal uses connector name", M.outputKey(mons[0], mons), "eDP-1")
@@ -130,6 +145,31 @@ var shifted = M.normalizeOrigin(M.parseMonitors([
 ]))
 check("origin normalized to 0,0", { x: shifted[0].x, y: shifted[0].y }, { x: 0, y: 0 })
 check("relative offset preserved", shifted[1].x, 1920)
+
+// --- alignment
+// In the fixture the laptop (0) touches the 4K (2) on its right; the 4K
+// touches the portrait (1) on its right. 0 and 1 do not touch.
+check("shared edges", M.sharedEdges(mons),
+  [{ a: 0, b: 2, side: "right" }, { a: 1, b: 2, side: "left" }])
+check("edges of the middle display", M.edgesOf(mons, 2),
+  [{ other: 0, side: "left" }, { other: 1, side: "right" }])
+check("side-by-side displays slide vertically", M.sideAxis("left"), "y")
+check("stacked displays slide horizontally", M.sideAxis("bottom"), "x")
+check("stacked displays share a horizontal edge", M.sharedEdges(stacked),
+  [{ a: 0, b: 1, side: "top" }])
+check("corner contact is not an edge", M.sharedEdges(M.parseMonitors([
+  { name: "A", width: 100, height: 100, x: 0, y: 0, scale: 1, disabled: false, availableModes: [] },
+  { name: "B", width: 100, height: 100, x: 100, y: 100, scale: 1, disabled: false, availableModes: [] }
+])).length, 0)
+// Laptop is 960 tall at y 0, the 4K is 1728 tall at y 0: the laptop can
+// slide from 959 above to 1727 below and still touch it.
+check("align range keeps the edges touching", M.alignRange(mons, 0, 2, "y"), { min: -959, max: 1727 })
+
+var ticks = M.rulerTicks(95, 120, 10)
+check("ticks start at the first multiple", ticks[0], { value: 100, at: 5, major: true, mid: true })
+check("ticks cover the span", ticks[ticks.length - 1].value, 210)
+check("mid ticks every 50", ticks[5], { value: 150, at: 55, major: false, mid: true })
+check("negative origins tick too", M.rulerTicks(-20, 20, 10).map(function(t) { return t.value }), [-20, -10, 0])
 
 // --- auto arrange
 var arranged = M.autoArrange(mons)
