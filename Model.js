@@ -333,6 +333,82 @@ function overlaps(monitors) {
   return found
 }
 
+// ---------------------------------------------------------------- alignment
+//
+// Hyprland positions displays in logical pixels, but the bezels between them
+// are physical: two displays at the same y are rarely at the same height on
+// the desk. The alignment overlay draws rulers along a shared edge, numbered
+// in layout coordinates, and slides one display along that edge until the
+// numbers (and the pointer guide) run straight across the gap.
+
+var OPPOSITE_SIDE = { left: "right", right: "left", top: "bottom", bottom: "top" }
+
+// Every pair of enabled displays that touch along an edge (not just at a
+// corner). `side` is the side of `a` that touches `b`; indices are into the
+// full list, disabled displays included, so they line up with the canvas.
+function sharedEdges(monitors) {
+  var out = []
+  var list = monitors || []
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i] || !list[i].enabled) continue
+    for (var j = i + 1; j < list.length; j++) {
+      if (!list[j] || !list[j].enabled) continue
+      var a = rectOf(list[i])
+      var b = rectOf(list[j])
+      var yOverlap = a.y < b.y + b.h && b.y < a.y + a.h
+      var xOverlap = a.x < b.x + b.w && b.x < a.x + a.w
+      var side = null
+      if (yOverlap && a.x + a.w === b.x) side = "right"
+      else if (yOverlap && b.x + b.w === a.x) side = "left"
+      else if (xOverlap && a.y + a.h === b.y) side = "bottom"
+      else if (xOverlap && b.y + b.h === a.y) side = "top"
+      if (side) out.push({ a: i, b: j, side: side })
+    }
+  }
+  return out
+}
+
+// The edges of one display: which neighbour, and on which of its own sides.
+function edgesOf(monitors, index) {
+  var out = []
+  var edges = sharedEdges(monitors)
+  for (var i = 0; i < edges.length; i++) {
+    var e = edges[i]
+    if (e.a === index) out.push({ other: e.b, side: e.side })
+    else if (e.b === index) out.push({ other: e.a, side: OPPOSITE_SIDE[e.side] })
+  }
+  return out
+}
+
+// Sliding along a vertical edge changes y; along a horizontal edge, x.
+function sideAxis(side) {
+  return side === "left" || side === "right" ? "y" : "x"
+}
+
+// The offsets `index` can slide by along `axis` and still share at least one
+// pixel of edge with `other` — past that the displays only meet at a corner.
+function alignRange(monitors, index, other, axis) {
+  var r = rectOf(monitors[index])
+  var p = rectOf(monitors[other])
+  if (axis === "x") return { min: p.x - r.w + 1 - r.x, max: p.x + p.w - 1 - r.x }
+  return { min: p.y - r.h + 1 - r.y, max: p.y + p.h - 1 - r.y }
+}
+
+// Ruler ticks for a screen whose local 0 sits at `origin` in layout
+// coordinates and which spans `span` logical pixels. Values are layout
+// coordinates, so matching numbers on two screens mark the same point of the
+// layout; `at` is the local offset to draw the tick at.
+function rulerTicks(origin, span, step) {
+  var s = Number(step) > 0 ? Number(step) : 10
+  var start = Number(origin) || 0
+  var end = start + (Number(span) || 0)
+  var out = []
+  for (var v = Math.ceil(start / s) * s; v <= end && out.length < 2000; v += s) {
+    out.push({ value: v, at: v - start, major: v % 100 === 0, mid: v % 50 === 0 })
+  }
+  return out
+}
+
 // Lay every enabled display out left to right, top-aligned. The fallback when
 // an arrangement has gone wrong, and the starting point for a fresh setup.
 function autoArrange(monitors) {
@@ -483,6 +559,8 @@ if (typeof module !== "undefined" && module.exports) {
     currentModeLabel: currentModeLabel, outputKey: outputKey, descriptionKey: descriptionKey,
     shortLabel: shortLabel, snapPosition: snapPosition, rectsOverlap: rectsOverlap,
     overlaps: overlaps, autoArrange: autoArrange, formatScale: formatScale,
+    sharedEdges: sharedEdges, edgesOf: edgesOf, sideAxis: sideAxis,
+    alignRange: alignRange, rulerTicks: rulerTicks,
     luaString: luaString, monitorLua: monitorLua, luaBlock: luaBlock,
     evalCommand: evalCommand, evalCommands: evalCommands,
     BLOCK_START: BLOCK_START, BLOCK_END: BLOCK_END

@@ -18,6 +18,12 @@ display *arranger*, and the general-purpose Wayland tools — `nwg-displays`,
   silently reflows around. `Shift+HJKL` nudges the selected display for fine
   adjustment; disabled displays park as ghosts at the bottom of the canvas so
   they stay clickable.
+- **Align across the bezel.** *Align* covers every screen with a numbered
+  ruler along the edge the selected display shares with its neighbour, plus
+  a pointer guide drawn at the same layout coordinate on both screens. Slide
+  the display with the arrow keys or the wheel (Shift for 10 px) until the
+  guide runs straight across the bezel and the same numbers face each other,
+  then press Enter; nothing touches the compositor until you Apply.
 - **Rotate and scale.** Portrait, 180°, 270°, and the usual scale presets.
   Scales that don't divide the resolution evenly (which Hyprland silently
   adjusts on reload) are flagged, with the nearest exact scale suggested.
@@ -142,6 +148,8 @@ omarchy-shell monitor-arranger preview    # apply to the running session
 omarchy-shell monitor-arranger keep       # confirm a preview (stop the countdown)
 omarchy-shell monitor-arranger save       # write monitors.lua and reload
 omarchy-shell monitor-arranger revert     # back to the pre-preview arrangement
+omarchy-shell monitor-arranger align      # on-screen rulers for the selected display
+omarchy-shell monitor-arranger alignDone  # close them, keeping the offset (or alignCancel)
 ```
 
 `preview` arms the same 15-second auto-revert as the panel's Apply button, so
