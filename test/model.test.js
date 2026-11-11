@@ -97,6 +97,14 @@ var far = M.snapPosition({ x: 9000, y: 9000, w: 100, h: 100 }, others, 40)
 check("leaves distant drags alone", { x: far.x, y: far.y }, { x: 9000, y: 9000 })
 check("no snap means no guides", { ex: far.edgeX, ey: far.edgeY }, { ex: null, ey: null })
 
+// Centring: the neighbour spans x 1536..4608 (midpoint 3072) and y 0..1728 (midpoint 864).
+var centreX = M.snapPosition({ x: 2490, y: 5000, w: 1152, h: 200 }, others, 40)
+check("centres horizontally on the neighbour", centreX.x, 2496)
+check("horizontal centre guide runs through the neighbour's midpoint", centreX.edgeX, 3072)
+var centreY = M.snapPosition({ x: 9000, y: 760, w: 1152, h: 200 }, others, 40)
+check("centres vertically on the neighbour", centreY.y, 764)
+check("vertical centre guide runs through the neighbour's midpoint", centreY.edgeY, 864)
+
 // --- scale exactness
 ok("1.25 divides 3840x2160", M.scaleIsExact({ pixelWidth: 3840, pixelHeight: 2160, scale: 1.25, transform: 0 }))
 ok("1.6 divides 3840x2400", M.scaleIsExact({ pixelWidth: 3840, pixelHeight: 2400, scale: 1.6, transform: 0 }))

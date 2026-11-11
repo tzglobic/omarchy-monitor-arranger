@@ -282,11 +282,14 @@ function snapPosition(dragged, others, threshold) {
     considerX(o.x - dragged.w, "left-of", o.x)                 // attach to the left edge
     considerX(o.x, "align-left", o.x)
     considerX(o.x + o.w - dragged.w, "align-right", o.x + o.w)
+    // Centre on the neighbour: the guide runs through both midpoints.
+    considerX(o.x + (o.w - dragged.w) / 2, "align-center", o.x + o.w / 2)
 
     considerY(o.y + o.h, "below", o.y + o.h)
     considerY(o.y - dragged.h, "above", o.y)
     considerY(o.y, "align-top", o.y)
     considerY(o.y + o.h - dragged.h, "align-bottom", o.y + o.h)
+    considerY(o.y + (o.h - dragged.h) / 2, "align-middle", o.y + o.h / 2)
   }
 
   if (bestDx > limit) { best.x = dragged.x; best.guideX = null; best.edgeX = null }
