@@ -1108,6 +1108,9 @@ Panel {
       id: tileMouse
       anchors.fill: parent
       hoverEnabled: true
+      // Without this the enclosing ScrollView can take a vertical drag as a
+      // scroll gesture, which cancels the display drag mid-gesture.
+      preventStealing: true
       cursorShape: tile.parked ? Qt.PointingHandCursor
                                : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
 
@@ -1152,8 +1155,14 @@ Panel {
         // far the canvas is zoomed out.
         var snapped = Model.snapPosition(wanted, others, Style.space(14) / tile.frame.k)
         var box = tile.frame.box
-        root.dragX = Math.max(box.x - size.w, Math.min(box.x + box.w, snapped.x))
-        root.dragY = Math.max(box.y - size.h, Math.min(box.y + box.h, snapped.y))
+        // Let the display keep following the pointer past the current bounds
+        // (up to a full bounds-width of margin on each side). Clamping it at
+        // the edge made it stop under the pointer and fall out of the drag;
+        // release re-anchors the whole layout via normalizeOrigin.
+        var marginX = Math.max(box.w, size.w)
+        var marginY = Math.max(box.h, size.h)
+        root.dragX = Math.max(box.x - marginX, Math.min(box.x + box.w + marginX, snapped.x))
+        root.dragY = Math.max(box.y - marginY, Math.min(box.y + box.h + marginY, snapped.y))
         // Guides only survive if the clamp didn't move the tile off its snap.
         root.dragEdgeX = (snapped.guideX !== null && root.dragX === snapped.x) ? snapped.edgeX : null
         root.dragEdgeY = (snapped.guideY !== null && root.dragY === snapped.y) ? snapped.edgeY : null
